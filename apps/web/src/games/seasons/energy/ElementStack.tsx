@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { ELEMENTS, type Element } from '@bgx/protocol/games/seasons';
+import { elementArt } from '../art';
 
 /**
  * 元素「堆叠」展示：用可数的小圆片（pip）表示数量，最多显示 5 个；
@@ -37,10 +38,10 @@ export const ElementPips = memo(function ElementPips({
       aria-label={`${ELEMENT_NAME[element]}能量 ${safe} 个`}
     >
       {visible === 0 && showEmpty ? (
-        <span className="ss-pip ss-pip-empty" aria-hidden />
+        <img className="ss-pip ss-pip-empty" src={elementArt(element)} alt="" />
       ) : (
         Array.from({ length: visible }, (_, index) => (
-          <span className="ss-pip" key={index} aria-hidden />
+          <img className="ss-pip" src={elementArt(element)} key={index} alt="" />
         ))
       )}
       {extra > 0 && <span className="ss-pip-more">+{extra}</span>}

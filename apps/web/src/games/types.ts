@@ -16,6 +16,8 @@ export interface GameUiMeta {
   rules: string[];
   /** 开局选项；没有选项给空数组 */
   options: GameOptionDefinition[];
+  /** 是否使用铺满对局页的棋盘，隐藏框架的对局标题、玩家栏和提示栏 */
+  fullBleed?: boolean;
 }
 
 export interface GamePanelProps<V = unknown> {

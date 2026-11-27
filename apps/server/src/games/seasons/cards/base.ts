@@ -5,7 +5,10 @@
 export {
   BASE_CARDS,
   BASE_CARD_BY_ID,
+  EXT1_CARDS,
+  EXT2_CARDS,
   SEASONS_CARDS,
   SEASONS_CARD_BY_ID,
+  REPLICA_CARD,
   CARD_BY_ID,
 } from '@bgx/protocol/games/seasons-cards-all';

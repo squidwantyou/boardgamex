@@ -1,76 +1,193 @@
 import type { SeasonsCardDef } from '@bgx/protocol/games/seasons';
+import { ACTIVATION_HANDLERS } from './activation-handlers.js';
+import { isSummonSupported } from './effects.js';
+import {
+  ROUND_END_HANDLERS,
+  SCORE_HANDLERS,
+  SEASON_CHANGE_HANDLERS,
+  TURN_END_HANDLERS,
+} from './event-handlers.js';
 
 /**
- * 已实现的效果处理器登记表。
- *
- * 卡牌数据（协议包）与效果实现（服务端）分离后，这张表就是两者的契约：
- * 新增一张牌时，先在 cards/*.ts 里写数据，再在这里登记它的效果 key；
- * setup 会校验整副牌，任何未登记 key 都会在开局前报错，而不是进场后静默无效。
+ * Runtime support is deliberately derived from the real dispatch tables.
+ * A card may be playable while some of its abilities are still missing, so
+ * "can enter play" and "every declared trigger is implemented" are separate
+ * questions. This prevents a stale hand-maintained key whitelist from being
+ * the authority again.
  */
-export const IMPLEMENTED_EFFECT_KEYS = {
-  on_summon: new Set([
-    'summon_gauge',
-    'draw_cards',
-    'gain_crystals',
-    'gain_energy',
-    'temporal_boots',
-    'divine_chalice',
-    'syllas',
-    'naria',
-    'amsug',
-    'lewis',
-    'per_magic_item_crystal',
-    'elemental_amulet',
-    'vampiric_crown',
-    'demon_of_argos',
-    'air_elemental',
-    'cursed_treatise',
-    'per_magic_item_energy',
-    'sid_nightshare',
-  ]),
-  activation: new Set([
-    'balance_of_ishtar',
-    'kairn',
-    'potion_power',
-    'potion_dreams',
-    'potion_knowledge',
-    'potion_life',
-    'tree_of_light',
-    'crystal_orb',
-    'glutton_cauldron',
-    'dragon_skull',
-    'per_familiar_crystal',
-    'necrotic_kriss',
-    'mirror_of_seasons',
-    'cursed_relic',
-  ]),
-  permanent: new Set([
-    'on_play_card_crystal',
-    'purse_of_io',
-    'figrim',
-    'wondrous_chest',
-    'beggars_horn',
-    'bespelled_grimoire',
-    'cost_reduction',
-    'on_season_change_energy',
-    'on_play_card_energy',
-    'arcano_leech',
-    'titus',
-    'thieving_fairies',
-  ]),
-  dice_change: new Set(['die_of_malice']),
-  score: new Set(['ragfields_helm', 'points', 'score_per_energy', 'sealed_chest']),
+export const STATIC_ABILITY_HANDLERS = {
+    activation_ability: true,
+  activation_cost: true,
+  cost_reduction: true,
+  dice_reroll: true,
+  draft_twist: true,
+  eog_score: true,
+  max_energy_plus: true,
+  no_free_summon: true,
+  on_summon_crystal: true,
+  on_summon_energy: true,
+    reserve_slot: true,
+    sealed_energy: true,
+  transmute_bonus: true,
 } as const;
 
-export type ImplementedTrigger = keyof typeof IMPLEMENTED_EFFECT_KEYS;
+/** Activation entries that live in engine.ts because they inspect or rewrite table state. */
+export const ENGINE_ACTIVATION_KEYS = new Set([
+  'crystal_orb',
+  'dragonsoul',
+  'eolis_replicator',
+  'ios_minion',
+  'jewel_of_the_ancients',
+  'magma_core',
+  'mirror_of_seasons',
+  'tree_of_light',
+]);
 
-const TRIGGERS = new Set<string>(Object.keys(IMPLEMENTED_EFFECT_KEYS));
+/** Engine-owned continuations of a declared trigger. */
+export const ENGINE_TRIGGER_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  activation: ENGINE_ACTIVATION_KEYS,
+  draft_end: new Set(['draft_twist']),
+    month_advance: new Set(['chrono_ring']),
+    opponent_activate: new Set(['opponent_action_reward', 'thieving_fairies']),
+  opponent_summon: new Set(['arcano_leech', 'magma_core', 'opponent_action_reward']),
+  season_change: new Set(['on_season_change_energy']),
+    summon: new Set(['urmian_psychic_cage']),
+    turn_end: new Set(['beggars_horn', 'transmute_on_crystal_die']),
+};
 
-/** 与数据里的 effect.trigger 对应；子触发（triggers 数组）不影响登记表。 */
+const DISPATCH_HANDLERS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+  on_summon: { __normalOnly: true },
+  turn_end: TURN_END_HANDLERS,
+  round_end: ROUND_END_HANDLERS,
+  season_change: SEASON_CHANGE_HANDLERS,
+  score: SCORE_HANDLERS,
+  activation: ACTIVATION_HANDLERS,
+};
+
+  /**
+   * `permanent` is a card family marker, not an event. These keys are read
+   * directly by static rules or by engine-owned timing paths. Keep this list
+   * explicit so a new passive is not accepted merely because it has a name.
+   */
+  export const PERMANENT_HANDLER_KEYS = new Set([
+    'on_play_card_crystal',
+    'on_play_card_energy',
+    'purse_of_io',
+    'transmute_on_crystal_die',
+    'shield_of_zira',
+  ]);
+
+export type CardSupportIssueCode =
+  | 'summon_handler_missing'
+  | 'trigger_handler_missing'
+  | 'activation_handler_missing'
+  | 'static_ability_missing';
+
+export interface CardSupportIssue {
+  code: CardSupportIssueCode;
+  trigger: string;
+  key: string;
+  message: string;
+}
+
 export function effectKeyOf(def: SeasonsCardDef): string {
+  return def.effect ? (def.effect.typeKey ?? def.effect.type) : '';
+}
+
+/** All trigger labels a card actually declares. The primary trigger is included. */
+export function declaredTriggersOf(def: SeasonsCardDef): string[] {
   const effect = def.effect;
-  if (!effect) return '';
-  return effect.typeKey ?? effect.type;
+  if (!effect) return [];
+  return [...new Set([effect.trigger, ...(effect.triggers ?? [])])];
+}
+
+  function hasDispatch(def: SeasonsCardDef, trigger: string, key: string): boolean {
+    if (trigger === 'permanent') {
+      const abilityKinds = (def.effect?.abilities ?? []).map((ability) => ability.kind);
+      if (
+        abilityKinds.length > 0 &&
+        abilityKinds.every((kind) => kind in STATIC_ABILITY_HANDLERS)
+      ) {
+        return true;
+      }
+      return PERMANENT_HANDLER_KEYS.has(key) || key === 'steadfast_die';
+    }
+    if (trigger === 'score') {
+      // Every score card contributes its printed points; special score
+      // handlers add their crystal bonus separately in SCORE_HANDLERS.
+      return (
+        (key !== '' && SCORE_HANDLERS[key] !== undefined) ||
+        key === '' ||
+        key === 'points'
+      );
+    }
+    if (trigger === 'on_sacrifice') {
+      return key === 'cursed_treatise';
+    }
+    if (trigger === 'dice_change') {
+      return key === 'die_of_malice';
+    }
+  return (
+    DISPATCH_HANDLERS[trigger]?.[key] !== undefined ||
+    ENGINE_TRIGGER_KEYS[trigger]?.has(key) === true
+  );
+}
+
+/** A normal/free summon path must be able to construct or execute this card's summon effect. */
+export function summonSupportIssue(def: SeasonsCardDef): CardSupportIssue | null {
+  const effect = def.effect;
+  if (!effect || !declaredTriggersOf(def).includes('on_summon')) return null;
+  const key = effectKeyOf(def);
+  if (!isSummonSupported(def)) {
+    return {
+      code: 'summon_handler_missing',
+      trigger: 'on_summon',
+      key,
+      message: `召唤入口缺少处理程序：on_summon → ${key}`,
+    };
+  }
+  return null;
+}
+
+/** Every declared ability must have a real dispatcher, not merely a card definition. */
+export function cardSupportIssues(def: SeasonsCardDef): CardSupportIssue[] {
+  const effect = def.effect;
+  if (!effect) return [];
+  const key = effectKeyOf(def);
+  const issues: CardSupportIssue[] = [];
+  const summonIssue = summonSupportIssue(def);
+  if (summonIssue) issues.push(summonIssue);
+
+    for (const trigger of declaredTriggersOf(def)) {
+    if (trigger === 'on_summon') continue;
+      if (hasDispatch(def, trigger, key)) continue;
+    if (trigger === 'activation') {
+      issues.push({
+        code: 'activation_handler_missing',
+        trigger,
+        key,
+        message: `激活入口缺少处理程序：activation → ${key}`,
+      });
+    } else {
+      issues.push({
+        code: 'trigger_handler_missing',
+        trigger,
+        key,
+        message: `触发入口缺少处理程序：${trigger} → ${key}`,
+      });
+    }
+  }
+
+  for (const ability of effect.abilities ?? []) {
+    if (ability.kind in STATIC_ABILITY_HANDLERS) continue;
+    issues.push({
+      code: 'static_ability_missing',
+      trigger: effect.trigger,
+      key,
+      message: `静态能力缺少处理程序：${ability.kind}`,
+    });
+  }
+  return issues;
 }
 
 export interface CardPoolIssue {
@@ -78,20 +195,18 @@ export interface CardPoolIssue {
   message: string;
 }
 
-/** 校验任意卡池能否被当前引擎完整支持；返回全部问题以便一次性修完。 */
 export function validateCardPool(cards: readonly SeasonsCardDef[]): CardPoolIssue[] {
   const issues: CardPoolIssue[] = [];
   const seen = new Set<number>();
   for (const def of cards) {
-    if (seen.has(def.id)) {
-      issues.push({ cardId: def.id, message: `卡牌 id ${def.id} 重复` });
-    }
+    if (seen.has(def.id)) issues.push({ cardId: def.id, message: `卡牌 id ${def.id} 重复` });
     seen.add(def.id);
     if (!def.nameZh) issues.push({ cardId: def.id, message: '缺少中文名' });
-    // 诅咒类卡牌可以是负分（如诅咒典籍 -5、受诅咒灵魂 -3）。
-    if (!Number.isInteger(def.points)) {
-      issues.push({ cardId: def.id, message: '分数必须是整数' });
+    if (def.id >= 51 && effectKeyOf(def) === 'inert_extension') {
+      issues.push({ cardId: def.id, message: `扩展卡「${def.nameZh}」效果尚未实现，不能加入验收卡池` });
+      continue;
     }
+    if (!Number.isInteger(def.points)) issues.push({ cardId: def.id, message: '分数必须是整数' });
     if (!Number.isInteger(def.cost.crystal) || def.cost.crystal < 0) {
       issues.push({ cardId: def.id, message: '水晶费用必须是非负整数' });
     }
@@ -100,22 +215,8 @@ export function validateCardPool(cards: readonly SeasonsCardDef[]): CardPoolIssu
         issues.push({ cardId: def.id, message: `${element} 费用必须是非负整数` });
       }
     }
-    const effect = def.effect;
-    if (!effect) continue;
-    const trigger = effect.trigger;
-    if (!TRIGGERS.has(trigger)) {
-      issues.push({ cardId: def.id, message: `未登记的效果时机：${trigger}` });
-      continue;
-    }
-    const key = effectKeyOf(def);
-    if (!key) {
-      issues.push({ cardId: def.id, message: '效果缺少 type/typeKey' });
-      continue;
-    }
-    const set = IMPLEMENTED_EFFECT_KEYS[trigger as ImplementedTrigger];
-    if (!(set as ReadonlySet<string>).has(key)) {
-      issues.push({ cardId: def.id, message: `效果未实现：${trigger} → ${key}` });
-    }
+      const summonIssue = summonSupportIssue(def);
+      if (summonIssue) issues.push({ cardId: def.id, message: summonIssue.message });
   }
   return issues;
 }

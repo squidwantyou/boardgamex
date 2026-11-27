@@ -19,6 +19,7 @@ export const plugin: GameUiPlugin<SeasonsGameView> = {
     title: seasonsCatalog.name,
     icon: '🍂',
     seats: ['甲', '乙', '丙', '丁'],
+    fullBleed: true,
   },
   Panel: SeasonsPanel,
   headline(view, mySeat) {

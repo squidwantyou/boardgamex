@@ -74,15 +74,15 @@ function candidates(state) {
   if (p.kind === 'energy_swap') {
     const total = typeof p.options.total === 'number' ? p.options.total : 0;
     const current = p.options.current ?? {};
+    const incoming = p.options.incoming ?? {};
+    const pool = {};
+    for (const element of ELEMENTS) pool[element] = (current[element] ?? 0) + (incoming[element] ?? 0);
     const out = { water: 0, air: 0, fire: 0, earth: 0 };
     let left = total;
     for (const element of ELEMENTS) {
-      out[element] = Math.min(current[element] ?? 0, left);
+      out[element] = Math.min(pool[element], left);
       left -= out[element];
-    }
-    for (let i = 0; left > 0; i += 1) {
-      out[ELEMENTS[i % ELEMENTS.length]] += 1;
-      left -= 1;
+      if (left <= 0) break;
     }
     return [out];
   }
@@ -180,26 +180,15 @@ try {
         durs.push(performance.now() - started);
         if (!html.includes('ss-board')) throw new Error('Panel 输出缺少 ss-board 根节点');
         if (seat === 0) {
-          for (const marker of ['术语', 'ss-band-top', 'ss-band-bottom', 'ss-log-tools']) {
+          for (const marker of ['术语与骰面图例', 'ss-table', 'ss-log-tools']) {
             if (!html.includes(marker)) throw new Error(`Panel 输出缺少关键入口：${marker}`);
           }
         }
-        if (seat === null) {
-          for (const marker of ['ss-spectator', 'ss-follow-chip', '跟随中']) {
-            if (!html.includes(marker)) throw new Error(`观战视图缺少 ${marker}`);
-          }
-        }
-        if (seat === 0 && state.season && state.season.dice.length > 0 && !html.includes('号骰')) {
-          throw new Error('骰子缺少说明性 title（号骰）');
-        }
-        if (seat === 0 && state.season && state.season.dice.length > 0 && !html.includes('骰面说明')) {
-          throw new Error('骰池缺少「骰面说明」入口');
+        if (seat === 0 && state.phase === 'play' && !html.includes('ss-die-')) {
+          throw new Error('骰池缺少骰子按钮（ss-die-）');
         }
         if (seat === 0 && state.phase === 'play' && (view.players[0].hand?.length ?? 0) > 1 && !html.includes('手牌排序')) {
           throw new Error('手牌缺少排序入口');
-        }
-        if (seat === 0 && state.phase !== 'ended' && !state.pendingChoice && view.myTurn) {
-          if (!html.includes('ss-hints')) throw new Error('行动提示（ss-hints）缺失');
         }
         if (state.phase === 'ended') {
           for (const marker of ['ss-result', 'ss-result-row']) {
@@ -232,14 +221,16 @@ try {
         renderState(state, `game=${game} 待选 ${state.pendingChoice.kind}`);
         const seat = state.pendingChoice.choosingSeat;
         let next = null;
+        const tried = [];
         for (const choice of candidates(state)) {
           const result = seasons.reduce(state, seat, { type: 'resolve-choice', choice }, ctx);
           if (result.ok) {
             next = result.state;
             break;
           }
+          tried.push([result.code, result.message, JSON.stringify(choice)]);
         }
-        if (!next) throw new Error('resolve-choice 全部候选失败');
+        if (!next) throw new Error(`resolve-choice 全部候选失败：${JSON.stringify(state.pendingChoice)} ${JSON.stringify(tried)}`);
         state = next;
         continue;
       }
@@ -321,7 +312,7 @@ try {
     } catch (error) {
       throw new Error(`ChoiceModal 渲染失败（${pending.kind}）：${error.message}`);
     }
-    if (!html.includes('ss-modal')) throw new Error(`ChoiceModal 输出缺少 ss-modal（${pending.kind}）`);
+    if (!html.includes('ss-inline-choice')) throw new Error(`ChoiceModal 输出缺少 ss-inline-choice（${pending.kind}）`);
     renders += 1;
     pendingSeen.add(pending.kind);
   }

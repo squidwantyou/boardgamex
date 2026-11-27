@@ -3,7 +3,7 @@ import cookie from '@fastify/cookie';
 import { Server } from 'socket.io';
 import { ZodError } from 'zod';
 import { config } from './config.js';
-import { deleteExpiredSessions } from './db.js';
+import { db, deleteExpiredSessions } from './db.js';
 import { registerDiscoveredGames } from './games/loader.js';
 import { registerHttp } from './http.js';
 import { deleteStaleMatches } from './matches.js';
@@ -64,6 +64,7 @@ async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
   io.close();
   await app.close();
+  db.close();
   process.exit(0);
 }
 

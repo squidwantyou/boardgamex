@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { UserRow } from './db.js';
-import { createSession, createUser, sessionUser } from './db.js';
+import { createHash } from 'node:crypto';
+import { createSession, createUser, deleteSession, sessionUser } from './db.js';
 import { config } from './config.js';
 
 export const SESSION_COOKIE = 'bgx_sid';
@@ -24,32 +25,55 @@ export function startGuestSession(reply: FastifyReply): UserRow {
 }
 
 export function userFromRequest(request: FastifyRequest, reply: FastifyReply): UserRow {
-  const sid = request.cookies[SESSION_COOKIE];
-  if (sid) {
+  const candidates = parseCookieValues(request.headers.cookie, SESSION_COOKIE);
+  for (const sid of candidates) {
     const user = sessionUser(sid);
     if (user) return user;
   }
+  for (const sid of candidates) deleteSession(sid);
   return startGuestSession(reply);
 }
 
 export function userFromCookieHeader(header: string | undefined): UserRow | null {
-  const sid = parseCookieHeader(header)[SESSION_COOKIE];
-  return sid ? sessionUser(sid) : null;
+  const candidates = parseCookieValues(header, SESSION_COOKIE);
+  for (const sid of candidates) {
+    const user = sessionUser(sid);
+    if (user) return user;
+  }
+  return null;
 }
 
 export function parseCookieHeader(header: string | undefined): Record<string, string> {
-  const cookies: Record<string, string> = {};
-  if (!header) return cookies;
+  return Object.fromEntries(
+    readCookiePairs(header),
+  );
+}
+
+function* readCookiePairs(header: string | undefined): Generator<[string, string]> {
+  if (!header) return;
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
     if (eq < 0) continue;
     const key = part.slice(0, eq).trim();
     if (!key) continue;
     try {
-      cookies[key] = decodeURIComponent(part.slice(eq + 1).trim());
+      yield [key, decodeURIComponent(part.slice(eq + 1).trim())];
     } catch {
-      cookies[key] = part.slice(eq + 1).trim();
+      yield [key, part.slice(eq + 1).trim()];
     }
   }
-  return cookies;
+}
+
+/** A browser may send several same-name cookies for different historical paths. */
+export function parseCookieValues(header: string | undefined, name: string): string[] {
+  return [...readCookiePairs(header)]
+    .filter(([key]) => key === name)
+    .map(([, value]) => value);
+}
+
+export function cookieFingerprint(value: string | undefined): string {
+  return createHash('sha256')
+    .update(value ?? '')
+    .digest('hex')
+    .slice(0, 12);
 }

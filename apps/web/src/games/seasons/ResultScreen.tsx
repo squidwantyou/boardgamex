@@ -18,9 +18,11 @@ function signed(value: number): string {
 export function ResultScreen({
   game,
   mySeat,
+  playerName = (seat: number) => `座位 ${seat + 1}`,
 }: {
   game: SeasonsGameView;
   mySeat: number | null;
+  playerName?: (seat: number) => string;
 }) {
   const result = game.result;
   if (!result) return null;
@@ -45,7 +47,7 @@ export function ResultScreen({
             {result.draw
               ? '最高分并列，本局平局'
               : result.winner !== null
-                ? `座位 ${result.winner + 1} 获胜`
+                ? `${playerName(result.winner)} 获胜`
                 : '对局结束'}
           </p>
         </div>
@@ -70,7 +72,7 @@ export function ResultScreen({
                   {rank}
                 </span>
                 <span className="ss-result-seat">
-                  座位 {score.seat + 1}
+                  {playerName(score.seat)}
                   {isMe && <em>你</em>}
                   {isWinner && <em className="ss-result-crown">胜</em>}
                 </span>

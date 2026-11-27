@@ -21,6 +21,8 @@ export interface GameOptionChoice {
   value: string;
   label: string;
   description?: string;
+  /** 该候选值暂时不可选；用于尚未完成规则实现的实验选项。 */
+  disabled?: boolean;
 }
 
 /**

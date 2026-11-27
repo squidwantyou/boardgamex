@@ -16,8 +16,7 @@ describe('seasons catalog / options', () => {
     expect(seasonsCatalog.id).toBe('seasons');
     expect(seasonsCatalog.minPlayers).toBe(2);
     expect(seasonsCatalog.maxPlayers).toBe(4);
-    // 房间创建界面只暴露「卡池」一个选项；customDeck 仅留给脚本。
-    expect(seasonsCatalog.options).toHaveLength(1);
+    expect(seasonsCatalog.options).toHaveLength(2);
     const pool = seasonsCatalog.options[0]!;
     expect(pool.id).toBe('pool');
     expect(pool.type).toBe('select');
@@ -37,8 +36,8 @@ describe('seasons catalog / options', () => {
     expect(seasonsOptionsSchema.safeParse({ customDeck: '1,a' }).success).toBe(false);
     expect(seasonsOptionsSchema.safeParse({ customDeck: '' }).success).toBe(false);
     expect(seasonsOptionsSchema.safeParse({ customDeck: '1,2', extra: 1 }).success).toBe(false);
-    // 扩展包选项已移除。
-    expect(seasonsOptionsSchema.safeParse({ extensions: ['base'] }).success).toBe(false);
+    expect(seasonsOptionsSchema.safeParse({ extensions: ['base', 'ext1', 'ext2'] }).success).toBe(true);
+    expect(seasonsOptionsSchema.safeParse({ extensions: ['unknown'] }).success).toBe(false);
     // 预设卡池
     expect(seasonsOptionsSchema.safeParse({ pool: 'standard' }).success).toBe(true);
     expect(seasonsOptionsSchema.safeParse({ pool: 'five_fortunes' }).success).toBe(true);
@@ -53,9 +52,9 @@ describe('seasons action schema', () => {
     { type: 'organize', cardUids: [3, 4, 5] },
     { type: 'organize-reset' },
     { type: 'use-badge', badgeType: 1, fromElements: ['water', 'air'], toElements: ['fire', 'earth'] },
-    { type: 'use-badge', badgeType: 2, element: 'earth' },
+    { type: 'use-badge', badgeType: 2 },
     { type: 'use-badge', badgeType: 3 },
-    { type: 'use-badge', badgeType: 4 },
+    { type: 'use-badge', badgeType: 4, dieId: 1 },
     { type: 'badge-keep', cardUid: 9 },
     { type: 'draft-dice', dieIndex: 0 },
     { type: 'summon', cardUid: 12 },
@@ -83,11 +82,17 @@ describe('seasons action schema', () => {
     expect(parse({ type: 'organize', cardUids: [1, 2] }).success).toBe(false);
     expect(parse({ type: 'use-badge', badgeType: 1, fromElements: ['water'], toElements: ['fire', 'earth'] }).success).toBe(false);
     expect(parse({ type: 'use-badge', badgeType: 1, fromElements: ['water', 'wind'], toElements: ['fire', 'earth'] }).success).toBe(false);
-    expect(parse({ type: 'use-badge', badgeType: 2 }).success).toBe(false);
+    expect(parse({ type: 'use-badge', badgeType: 2, element: 'wind' }).success).toBe(false);
     expect(parse({ type: 'use-badge', badgeType: 5 }).success).toBe(false);
     expect(parse({ type: 'draft-dice', dieIndex: -1 }).success).toBe(false);
     expect(parse({ type: 'draft-dice', dieIndex: 8 }).success).toBe(false);
-    expect(parse({ type: 'summon', cardUid: 3, paidElements: ['water', 'water', 'air', 'fire', 'earth'] }).success).toBe(false);
+    expect(
+      parse({
+        type: 'summon',
+        cardUid: 3,
+        paidElements: ['water', 'water', 'water', 'water', 'water'],
+      }).success,
+    ).toBe(false);
     expect(parse({ type: 'transmute', element: 'light' }).success).toBe(false);
   });
 

@@ -9,7 +9,7 @@ import type {
   ServerMessage,
 } from '@bgx/protocol';
 import { connectSocket } from '../lib/socket';
-import { api, ApiError, errorMessage, uid } from '../lib/api';
+import { api, ApiError, cachedMe, errorMessage, loadMe, uid } from '../lib/api';
 import { useMe } from '../hooks/useMe';
 import { usePageMeta, DEFAULT_PAGE_DESCRIPTION } from '../hooks/usePageMeta';
 import { useToast } from '../hooks/useToast';
@@ -20,7 +20,7 @@ import { GameOptions } from '../components/GameOptions';
 import { Toast } from '../components/Toast';
 import { hueOf, timeAgo } from '../lib/format';
 
-type ConnState = 'connecting' | 'online' | 'offline';
+type ConnState = 'connecting' | 'online' | 'offline' | 'error';
 
 export function MatchPage() {
   const { matchId = '' } = useParams();
@@ -32,6 +32,8 @@ export function MatchPage() {
   const [summary, setSummary] = useState<MatchSummary | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conn, setConn] = useState<ConnState>('connecting');
+  const [connMessage, setConnMessage] = useState('');
+  const [joinAttempt, setJoinAttempt] = useState(0);
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState<'resign' | 'rematch' | 'join' | 'start' | 'abort' | null>(null);
   const [optionBusy, setOptionBusy] = useState(false);
@@ -40,8 +42,11 @@ export function MatchPage() {
 
   useEffect(() => {
     let alive = true;
-    api
-      .match(matchId)
+    setNotFound(false);
+    setSummary(null);
+    const sessionReady = loadMe();
+    sessionReady
+      .then(() => api.match(matchId))
       .then((res) => {
         if (alive) setSummary(res.match);
       })
@@ -50,8 +55,8 @@ export function MatchPage() {
         if (err instanceof ApiError && err.status === 404) setNotFound(true);
         else show(errorMessage(err), 'error');
       });
-    api
-      .chat(matchId)
+    sessionReady
+      .then(() => api.chat(matchId))
       .then((res) => {
         if (alive) setMessages(res.messages);
       })
@@ -65,67 +70,129 @@ export function MatchPage() {
     setView(null);
     setMessages([]);
     setConn('connecting');
+    setConnMessage('');
 
-    const socket = connectSocket();
-    socketRef.current = socket;
+    const sessionReady = loadMe();
+    let socket: Socket | null = null;
+    const connectWhenReady = () => {
+      if (!sessionReady || socket) return;
+      socket = connectSocket();
+      socketRef.current = socket;
+      attachSocket(socket);
+    };
+    const attachSocket = (activeSocket: Socket) => {
+      activeSocket.on('connect', () => {
+        setConn('connecting');
+        setConnMessage('正在进入房间…');
+        activeSocket.emit('join', { t: 'join', matchId });
+      });
+      activeSocket.on('disconnect', () => {
+        setConn('offline');
+        setConnMessage(activeSocket.active ? '连接中断，正在恢复…' : '连接已关闭');
+      });
+      let recoveringSession = false;
+      activeSocket.on('connect_error', (error) => {
+        const unauthorized = error.message === 'unauthorized' || error.message === 'unauthorized_local_session_expired';
+        void api.debugSession().then((info) => {
+          console.warn('BGX session diagnostic', {
+            socketError: error.message,
+            httpUser: info.user?.id,
+            cookieCount: info.cookieCount,
+            cookieFingerprints: info.cookieFingerprints,
+            headerFingerprint: info.headerFingerprint,
+          });
+          if (info.cookieCount > 1) {
+            document.cookie = 'bgx_sid=; Path=/bgx; Max-Age=0';
+            document.cookie = 'bgx_sid=; Path=/; Max-Age=0';
+            void loadMe({ refresh: true }).then(() => activeSocket.connect());
+          }
+        }).catch(() => undefined);
+        if (unauthorized && !recoveringSession) {
+          recoveringSession = true;
+          setConn('connecting');
+          setConnMessage('正在恢复本地会话…');
+          void loadMe({ refresh: true })
+            .then(() => activeSocket.connect())
+            .catch(() => {
+              setConn('error');
+              setConnMessage('本地会话恢复失败');
+            });
+          return;
+        }
+        setConn('error');
+        setConnMessage(
+          unauthorized
+            ? '本地会话仍无效，请重新启动本地服务'
+            : '无法连接本地服务',
+        );
+      });
 
-    socket.on('connect', () => {
-      setConn('online');
-      socket.emit('join', { t: 'join', matchId });
-    });
-    socket.on('disconnect', () => setConn('offline'));
-    socket.on('connect_error', () => setConn('offline'));
+      activeSocket.on('snapshot', (msg: ServerMessage) => {
+        if (msg.t === 'snapshot') {
+          const expectedUserId = cachedMe()?.id;
+          if (expectedUserId && msg.view.you.userId !== expectedUserId) {
+            activeSocket.disconnect();
+            setConn('connecting');
+            setConnMessage('会话不一致，正在重新进入…');
+            window.location.reload();
+            return;
+          }
+          setView(msg.view);
+          setNotFound(false);
+          setConn('online');
+          setConnMessage('');
+        }
+      });
 
-    socket.on('snapshot', (msg: ServerMessage) => {
-      if (msg.t === 'snapshot') {
-        setView(msg.view);
-        setNotFound(false);
-      }
-    });
+      activeSocket.on('update', (msg: ServerMessage) => {
+        if (msg.t !== 'update') return;
+        setView((prev) => (!prev || msg.view.seq >= prev.seq ? msg.view : prev));
+        const gameUi = getGameUi(msg.view.gameId);
+        for (const event of msg.events) {
+          const notice = gameUi?.eventMessage?.(event);
+          if (notice) show(notice.text, notice.tone ?? 'info');
+        }
+        api
+          .match(matchId)
+          .then((res) => setSummary(res.match))
+          .catch(() => undefined);
+      });
 
-    socket.on('update', (msg: ServerMessage) => {
-      if (msg.t !== 'update') return;
-      setView((prev) => (!prev || msg.view.seq >= prev.seq ? msg.view : prev));
-      const gameUi = getGameUi(msg.view.gameId);
-      for (const event of msg.events) {
-        const notice = gameUi?.eventMessage?.(event);
-        if (notice) show(notice.text, notice.tone ?? 'info');
-      }
-      api
-        .match(matchId)
-        .then((res) => setSummary(res.match))
-        .catch(() => undefined);
-    });
+      activeSocket.on('chat', (msg: ServerMessage) => {
+        if (msg.t !== 'chat') return;
+        setMessages((prev) =>
+          prev.some((m) => m.id === msg.message.id) ? prev : [...prev, msg.message],
+        );
+      });
 
-    socket.on('chat', (msg: ServerMessage) => {
-      if (msg.t !== 'chat') return;
-      setMessages((prev) =>
-        prev.some((m) => m.id === msg.message.id) ? prev : [...prev, msg.message],
-      );
-    });
+      activeSocket.on('rematch', (msg: ServerMessage) => {
+        if (msg.t !== 'rematch') return;
+        show('新对局已开，正在进入…', 'success');
+        navigate(`/m/${msg.matchId}`);
+      });
 
-    socket.on('rematch', (msg: ServerMessage) => {
-      if (msg.t !== 'rematch') return;
-      show('新对局已开，正在进入…', 'success');
-      navigate(`/m/${msg.matchId}`);
-    });
+      activeSocket.on('error', (msg: ServerMessage) => {
+        if (msg.t !== 'error') return;
+        if (msg.code === 'match_not_found') {
+          setNotFound(true);
+          activeSocket.disconnect();
+          setConn('error');
+          setConnMessage('房间不存在');
+          return;
+        }
+        show(msg.message, 'error');
+      });
+      activeSocket.connect();
+    };
 
-    socket.on('error', (msg: ServerMessage) => {
-      if (msg.t !== 'error') return;
-      if (msg.code === 'match_not_found') {
-        setNotFound(true);
-        socket.disconnect();
-        return;
-      }
-      show(msg.message, 'error');
-    });
+    void sessionReady.then(connectWhenReady);
 
     return () => {
-      socket.emit('leave', { t: 'leave', matchId });
-      socket.disconnect();
+      socket?.emit('leave', { t: 'leave', matchId });
+      socket?.disconnect();
       socketRef.current = null;
     };
-  }, [matchId, navigate, show]);
+  }, [matchId, navigate, show, joinAttempt]);
 
   const sendChat = useCallback(
     (text: string): boolean => {
@@ -250,6 +317,24 @@ export function MatchPage() {
       : (gameUi?.meta.description ?? DEFAULT_PAGE_DESCRIPTION),
   );
 
+  const isPlayer = !!view && view.you.seat !== null;
+  const isHost = !!view && me?.id === view.hostId;
+  const waiting = view?.status === 'waiting';
+  const finished = view?.status === 'finished';
+  const maxPlayers = view?.maxPlayers ?? summary?.maxPlayers ?? 2;
+  const minPlayers = view?.minPlayers ?? summary?.minPlayers ?? 2;
+  const playerCount = view?.players.length ?? summary?.playerCount ?? 0;
+  const full = playerCount >= maxPlayers;
+  const startedView =
+    view && view.game ? (view as StartedMatchView<unknown>) : null;
+  const fullBleed = Boolean(!notFound && startedView && gameUi?.meta.fullBleed);
+
+  useEffect(() => {
+    if (!fullBleed) return;
+    document.body.classList.add('bgx-fullbleed');
+    return () => document.body.classList.remove('bgx-fullbleed');
+  }, [fullBleed]);
+
   if (notFound) {
     return (
       <div className="page">
@@ -265,17 +350,6 @@ export function MatchPage() {
       </div>
     );
   }
-
-  const isPlayer = !!view && view.you.seat !== null;
-  const isHost = !!view && me?.id === view.hostId;
-  const waiting = view?.status === 'waiting';
-  const finished = view?.status === 'finished';
-  const maxPlayers = view?.maxPlayers ?? summary?.maxPlayers ?? 2;
-  const minPlayers = view?.minPlayers ?? summary?.minPlayers ?? 2;
-  const playerCount = view?.players.length ?? summary?.playerCount ?? 0;
-  const full = playerCount >= maxPlayers;
-  const startedView =
-    view && view.game ? (view as StartedMatchView<unknown>) : null;
 
   function headline(): string {
     if (!view) return '正在进入房间…';
@@ -302,6 +376,15 @@ export function MatchPage() {
   }
 
   const optionDefs = gameUi?.meta.options ?? [];
+  const selectedDisabledChoices = optionDefs.flatMap((def) => {
+    const value = view?.options[def.id] ?? def.default;
+    const selected = Array.isArray(value) ? value : value ? [value] : [];
+    return def.choices.filter(
+      (choice) => choice.disabled && selected.includes(choice.value),
+    );
+  });
+  const hasUnsupportedOptions = selectedDisabledChoices.length > 0;
+
   function optionLabels(value: string | string[] | undefined, def: (typeof optionDefs)[number]) {
     const selected = Array.isArray(value) ? value : value ? [value] : [];
     return def.choices
@@ -320,7 +403,7 @@ export function MatchPage() {
 
   return (
     <div className="page match-page">
-      <div className="match-topbar">
+      <div className={`match-topbar${fullBleed ? ' match-topbar-fullbleed' : ''}`}>
         <Link to="/" className="back-link">
           ← 大厅
         </Link>
@@ -332,23 +415,41 @@ export function MatchPage() {
         </div>
         <span className={`conn conn-${conn}`}>
           <span className="conn-dot" aria-hidden />
-          {conn === 'online' ? '已连接' : conn === 'offline' ? '重连中…' : '连接中…'}
+          {conn === 'online'
+            ? '已连接'
+            : conn === 'offline'
+              ? '重连中…'
+              : conn === 'error'
+                ? '连接失败'
+                : '连接中…'}
         </span>
+        {conn === 'error' && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setJoinAttempt((attempt) => attempt + 1)}
+          >
+            重试
+          </button>
+        )}
+        {connMessage && <span className="conn-detail">{connMessage}</span>}
       </div>
 
-      <div className="match-layout">
+      <div className={`match-layout${fullBleed ? ' match-layout-full' : ''}`}>
         <main className="match-main">
-          <section className="panel game-panel">
-            <div className="game-head">
-              <div>
-                <p className="eyebrow">{view?.gameName ?? summary?.gameName ?? '对局'}</p>
-                <h1 className="game-headline">{headline()}</h1>
-                <p className="muted small">{statusLine()}</p>
-                {!waiting && optionSummary && (
-                  <p className="option-summary muted small">{optionSummary}</p>
-                )}
+          <section className={`panel game-panel${fullBleed ? ' game-panel-full' : ''}`}>
+            {!fullBleed && (
+              <div className="game-head">
+                <div>
+                  <p className="eyebrow">{view?.gameName ?? summary?.gameName ?? '对局'}</p>
+                  <h1 className="game-headline">{headline()}</h1>
+                  <p className="muted small">{statusLine()}</p>
+                  {!waiting && optionSummary && (
+                    <p className="option-summary muted small">{optionSummary}</p>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {waiting && (
               <div className="invite-box">
@@ -363,11 +464,16 @@ export function MatchPage() {
                       className="btn btn-primary"
                       onClick={() => void startGame()}
                       disabled={
-                        busy === 'start' || playerCount < minPlayers || conn !== 'online'
+                        busy === 'start' ||
+                        playerCount < minPlayers ||
+                        conn !== 'online' ||
+                        hasUnsupportedOptions
                       }
                     >
                       {busy === 'start'
                         ? '开始中…'
+                        : hasUnsupportedOptions
+                          ? '请先调整扩展设置'
                         : playerCount < minPlayers
                           ? `还差 ${minPlayers - playerCount} 人`
                           : '开始对局'}
@@ -405,6 +511,12 @@ export function MatchPage() {
                   disabled={!isHost || optionBusy || conn !== 'online'}
                   onChange={(patch) => void changeOptions(patch)}
                 />
+                {hasUnsupportedOptions && (
+                  <p className="option-warning" role="status">
+                    扩展牌面和数据已加入，但部分扩展牌效果仍在开发。
+                    请取消勾选这些扩展包，只保留“基础 50 张”后开始对局。
+                  </p>
+                )}
               </div>
             )}
 
@@ -475,15 +587,17 @@ export function MatchPage() {
             </div>
           </section>
 
-          <Chat
-            messages={messages}
-            meId={me?.id ?? null}
-            onSend={sendChat}
-            disabled={conn !== 'online'}
-          />
+          {!fullBleed && (
+            <Chat
+              messages={messages}
+              meId={me?.id ?? null}
+              onSend={sendChat}
+              disabled={conn !== 'online'}
+            />
+          )}
         </main>
 
-        <aside className="match-side">
+        {!fullBleed && <aside className="match-side">
           <section className="panel players-panel">
             <div className="panel-head">
               <h2>玩家</h2>
@@ -552,7 +666,7 @@ export function MatchPage() {
               ))}
             </ul>
           </section>
-        </aside>
+        </aside>}
       </div>
 
       <Toast toast={toast} />

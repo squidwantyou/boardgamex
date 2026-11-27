@@ -38,11 +38,15 @@ export function GameOptions({ definitions, values, disabled, onChange }: GameOpt
                 {def.choices.map((choice) => {
                   const checked = selected.includes(choice.value);
                   return (
-                    <label className="option-check" key={choice.value}>
+                    <label
+                      className={`option-check${choice.disabled && !checked ? ' option-check-disabled' : ''}`}
+                      key={choice.value}
+                      title={choice.disabled ? choice.description : undefined}
+                    >
                       <input
                         type="checkbox"
                         checked={checked}
-                        disabled={disabled}
+                        disabled={disabled || (choice.disabled && !checked)}
                         onChange={() => {
                           const next = checked
                             ? selected.filter((item) => item !== choice.value)
@@ -64,7 +68,11 @@ export function GameOptions({ definitions, values, disabled, onChange }: GameOpt
                 onChange={(event) => onChange({ [def.id]: event.target.value })}
               >
                 {def.choices.map((choice) => (
-                  <option value={choice.value} key={choice.value}>
+                  <option
+                    value={choice.value}
+                    key={choice.value}
+                    disabled={choice.disabled && choice.value !== value}
+                  >
                     {choice.label}
                   </option>
                 ))}

@@ -4,9 +4,10 @@ import type {
   SeasonsCardDef,
   SeasonsCardEffect,
 } from '@bgx/protocol/games/seasons';
+import { ELEMENTS } from '@bgx/protocol/games/seasons';
 import type { CardInstance, SeasonsState } from '../engine.js';
-import { addEnergyCapped, energySum } from '../rules/play.js';
-import { drawToHand, patchPlayer, pushLog, seatName } from '../rules/state.js';
+import { addEnergyCapped, ELEMENT_NAME_ZH, energySum } from '../rules/play.js';
+import { drawOne, drawToHand, patchPlayer, printedCardType, pushLog, seatName } from '../rules/state.js';
 import { cardById } from './registry.js';
 
 /**
@@ -53,17 +54,55 @@ export function summonEffectKey(effect: SeasonsCardEffect): string {
 }
 
 export const SUMMON_EFFECTS: Readonly<Record<string, SummonEffectHandler>> = {
+  per_familiar_crystal: (state, seat, card) => logEffect(
+    patchPlayer(state, seat, (player) => ({ crystals: player.crystals + 10 })),
+    seat, card, '水晶 +10',
+  ),
+  /** 85 心灵囚笼：牌面保留一个陷阱标记，拦截下一次召唤。 */
+  urmian_psychic_cage: (state, seat, card) => {
+    const next = patchPlayer(state, seat, (player) => ({
+      cardMarks: {
+        ...(player.cardMarks ?? {}),
+        [card.u]: { ...(player.cardMarks?.[card.u] ?? {}), trapArmed: true },
+      },
+    }));
+    return logEffect(next, seat, card, '布置陷阱标记');
+  },
+
+  /** 89 猫头鹰贤者：每个在场玩家各贡献一张牌组成中央候选区。 */
+  otus_the_oracle: (state, seat, card) => {
+    const pool: CardRef[] = [];
+    let next = state;
+    for (let index = 0; index < state.players.length; index += 1) {
+      const [drawnState, drawn] = drawOne(next);
+      next = drawnState;
+      if (drawn) pool.push(drawn);
+    }
+    if (pool.length === 0) return state;
+    return logEffect(
+      { ...next, otusPool: pool, otusUsed: [] },
+      seat,
+      card,
+      `展示 ${pool.length} 张中央候选牌`,
+    );
+  },
+
   // 神圣圣杯（召唤位不足）：抽 4 张全部弃掉。
   divine_chalice: (state, seat, card) => {
     const me = state.players[seat];
-    if (!me || me.gauge > me.played.length + 1) return state;
-    const drawn = state.deck.slice(-4).reverse();
+    if (!me || me.gauge > me.played.length) return state;
+    const drawn: CardRef[] = [];
+    let next = state;
+    for (let i = 0; i < 4; i++) {
+      const [drawnState, top] = drawOne(next);
+      next = drawnState;
+      if (top) drawn.push(top);
+    }
     if (drawn.length === 0) return state;
     return logEffect(
       {
-        ...state,
-        deck: state.deck.slice(0, -drawn.length),
-        discard: [...state.discard, ...drawn],
+        ...next,
+        discard: [...next.discard, ...drawn],
       },
       seat,
       card,
@@ -90,7 +129,7 @@ export const SUMMON_EFFECTS: Readonly<Record<string, SummonEffectHandler>> = {
     const amount = effect.amount ?? 0;
     const count = (state.players[seat]?.played ?? []).filter(
       (item) =>
-        item.u !== card.u && cardById(item.i)?.type === 'magic_item',
+        item.u !== card.u && printedCardType(state.players[seat]!, item) === 'magic_item',
     ).length;
     if (amount <= 0 || count === 0) return state;
     const gained = amount * count;
@@ -118,7 +157,10 @@ export const SUMMON_EFFECTS: Readonly<Record<string, SummonEffectHandler>> = {
     let next = state;
     for (const opponent of state.players) {
       if (opponent.seat === seat) continue;
-      const storedOnCards = opponent.played.reduce(
+      const usable = (item: CardInstance) => !opponent.cardMarks?.[item.u]?.lockSource &&
+        cardById(item.i)?.effect?.abilities?.some((a) => a.kind === 'reserve_slot') &&
+        !cardById(item.i)?.effect?.abilities?.some((a) => a.kind === 'sealed_energy');
+      const storedOnCards = opponent.played.filter(usable).reduce(
         (total, item) =>
           total + (item.stored ? energySum(item.stored as Record<Element, number>) : 0),
         0,
@@ -131,7 +173,7 @@ export const SUMMON_EFFECTS: Readonly<Record<string, SummonEffectHandler>> = {
           player.maxEnergy,
         ),
         played: player.played.map((item) =>
-          item.stored ? { ...item, stored: undefined } : item,
+          item.stored && usable(item) ? { ...item, stored: undefined } : item,
         ),
       }));
     }
@@ -164,7 +206,7 @@ export const SUMMON_EFFECTS: Readonly<Record<string, SummonEffectHandler>> = {
   cursed_relic: (state, seat, card) => {
     const next = patchPlayer(state, seat, (player) => ({
       crystals: player.crystals + 10,
-      energies: addEnergyCapped(player.energies, { water: 1 }, player.maxEnergy),
+      energies: addEnergyCapped(player.energies, { water: 1 }, Infinity),
     }));
     return logEffect(next, seat, card, '水晶 +10，水能量 +1');
   },
@@ -200,14 +242,174 @@ export const SUMMON_EFFECTS: Readonly<Record<string, SummonEffectHandler>> = {
       ? logEffect(next, seat, card, details.join('，'))
       : next;
   },
+  // --- 魔法王国 / 命运之路：进场效果 -----------------------------------------
+
+  /** 60 复生王座：仅在召唤时触发一次；无手牌且无盾时无事发生。 */
+  throne_of_renewal: (state) => state,
+
+  /** 67 远古鹰隼：进场 +1 召唤等级、+10 水晶（牺牲激活在引擎中处理）。 */
+  argos_hawk: (state, seat, card) => {
+    let next = patchPlayer(state, seat, (player) => ({
+      gauge: player.gauge + 1,
+      crystals: player.crystals + 10,
+    }));
+    return logEffect(next, seat, card, '召唤等级 +1，水晶 +10');
+  },
+
+  /** 54 赛琳娜的法典：选一张费用含能量的其他魔器回手。 */
+  selenias_codex: (state) => state,
+
+  /** 55 伊斯塔的卷轴、58 精灵捕捉网：逐张翻牌后二选一。 */
+  scroll_of_ishtar: (state) => state,
+  familiar_catcher: (state) => state,
+
+  /** 65 时光护符：2 能量自动选择，弃/抽 X 继续由引擎处理。 */
+  amulet_of_time: (state) => state,
+
+  /** 68 篡夺渡鸦：选对手魔器并复制。 */
+  raven_the_usurper: (state) => state,
+
+  /** 69 冥界狱犬：按座位依次做全桌选择。 */
+  warden_of_argos: (state) => state,
+
+  /** 70 贼头鼠：每位对手至多拿 2 个能量。 */
+  ratty_nightshade: (state, seat) => ({
+    ...state, pendingQueue: [...state.pendingQueue, ...state.players
+      .filter((player) => player.seat !== seat)
+      .filter((player) => ELEMENTS.some((e) => player.energies[e] > 0))
+      .map((player) => ({
+        kind: 'element_alloc', key: 'ratty_steal', choosingSeat: seat,
+        options: { title: `贼头鼠：选择从${seatName(player.seat)}拿取的能量`,
+          amount: Math.min(2, ELEMENTS.reduce((sum, e) => sum + player.energies[e], 0)),
+           targetSeat: player.seat, maxPerElement: player.energies, allowPartial: true, minAmount: 0, label: '拿取' },
+      }))],
+  }),
+
+  /** 79 坟墓护符：弃牌顶 3 张按顺序处理。 */
+  sepulchral_amulet: (state) => state,
+
+  /** 83 艾瑞斯的模仿：弃手牌或牺牲魔器换 12 水晶。 */
+  arus_mimicry: (state) => state,
+
+  /** 86 拉格菲尔德的仆从：≥10 水晶的玩家各自 +1 等级并摸 1 张。 */
+  servant_of_ragfield: (state, seat, card) => {
+    let next = state;
+    let affected = 0;
+    for (const player of state.players) {
+      if (player.crystals < 10) continue;
+      affected += 1;
+      next = patchPlayer(next, player.seat, (item) => ({
+        gauge: item.gauge + 1,
+      }));
+      const [drawnState, drawn] = drawOne(next);
+      next = drawnState;
+      if (drawn) {
+        next = {
+          ...next,
+          pendingQueue: [
+            ...next.pendingQueue,
+            {
+              kind: 'branch',
+              key: 'servant_of_ragfield',
+              choosingSeat: player.seat,
+              options: {
+                title: '拉格菲尔德的仆从：选择保留或弃掉刚摸到的牌',
+                branches: [
+                  { id: 'keep', label: `保留「${cardById(drawn.i)?.nameZh ?? drawn.i}」` },
+                  { id: 'discard', label: '弃掉' },
+                ],
+                card: drawn,
+                servantOwner: seat,
+              },
+            },
+          ],
+        };
+      }
+    }
+    return logEffect(
+      next,
+      seat,
+      card,
+      affected > 0 ? `${affected} 位玩家召唤等级 +1 并摸牌` : '没有玩家拥有 10 水晶',
+    );
+  },
+
+  /** 87 亚苟斯的纠缠：选择一名对手的一张神仆挂上锁结。 */
+  argosian_tangleweed: (state, seat) => {
+    const targets = state.players
+      .filter((player) => player.seat !== seat)
+      .flatMap((player) =>
+        player.played
+          .filter((item) => printedCardType(player, item) === 'familiar')
+          .map((item) => ({ ...item, seat: player.seat })),
+      );
+    return targets.length > 0 ? state : state;
+  },
+
+  /** 90 诈欺狼：抽 2 后转赠一张。 */
+  crafty_nightshade: (state, seat, card) => {
+    const rivals = state.players.filter((player) => player.seat !== seat);
+    if (rivals.length === 0) return state;
+    const fewest = Math.min(...rivals.map((player) => player.played.length));
+    const targets = rivals.filter((player) => player.played.length === fewest);
+    let next = state;
+    for (let i = 0; i < 2; i += 1) {
+      const [drawnState, drawn] = drawOne(next);
+      next = drawnState;
+      if (drawn) {
+        next = patchPlayer(next, seat, (player) => ({
+          hand: [...player.hand, drawn],
+        }));
+      }
+    }
+    return logEffect(
+      {
+        ...next,
+        pendingQueue: [
+          ...next.pendingQueue,
+          {
+            kind: 'branch',
+            key: 'crafty_nightshade',
+            choosingSeat: seat,
+            options: {
+              title: '诈欺狼：选择场上魔法牌最少的对手，再把一张手牌交给他',
+              branches: targets.map((target) => ({
+                id: String(target.seat),
+                label: `${seatName(target.seat)}（场上 ${target.played.length} 张）`,
+              })),
+              stage: 'target',
+            },
+          },
+        ],
+      },
+      seat,
+      card,
+      '抽 2 张，等待选择交牌目标',
+    );
+  },
+
+  /** 76 科洛夫的日晷：进场 +2 召唤等级（回合末重掷由事件状态机处理）。 */
+  dial_of_colof: (state, seat, card) => {
+    const next = patchPlayer(state, seat, (player) => ({ gauge: player.gauge + 2 }));
+    return logEffect(next, seat, card, '召唤等级 +2');
+  },
+
+  /** 88 伊欧的爪牙：进场 +1 风、+1 召唤等级，持有者无法获得水晶。 */
+  ios_minion: (state, seat, card) => {
+    const next = patchPlayer(state, seat, (player) => ({
+      gauge: player.gauge + 1,
+      energies: addEnergyCapped(player.energies, { air: 1 }, Infinity),
+    }));
+    return logEffect(next, seat, card, '获得 1 风元素，召唤等级 +1');
+  },
+
   // 扩展包「召唤条件」：满足条件时给自己水晶 / 扣对手水晶（魔法骑士/魔法巨龙/命运冠军）。
   summon_condition: (state, seat, card, effect) => {
     const me = state.players[seat];
     if (!me) return state;
     const countType = (type: string) =>
       me.played.reduce((total, item) => {
-        const def = cardById(item.i);
-        return total + (def?.type === type ? 1 : 0);
+        return total + (printedCardType(me, item) === type ? 1 : 0);
       }, 0);
     if (typeof effect.requireMagic === 'number' && countType('magic_item') < effect.requireMagic) {
       return logEffect(state, seat, card, '召唤条件未满足（魔法物品不足）');
@@ -236,6 +438,42 @@ export const SUMMON_EFFECTS: Readonly<Record<string, SummonEffectHandler>> = {
   },
 
 };
+
+/** 召唤时进入交互流程的效果。与 SUMMON_EFFECTS 一起构成完整的召唤入口。 */
+export const SUMMON_CHOICE_KEYS: ReadonlySet<string> = new Set([
+  'throne_of_renewal',
+  'selenias_codex',
+  'scroll_of_ishtar',
+  'familiar_catcher',
+  'raven_the_usurper',
+  'warden_of_argos',
+  'ratty_nightshade',
+  'sepulchral_amulet',
+  'argosian_tangleweed',
+  'otus_the_oracle',
+  'crafty_nightshade',
+  'amulet_of_time',
+  'gain_energy',
+  'draw_cards',
+  'bespelled_grimoire',
+  'cursed_treatise',
+  'per_magic_item_energy',
+  'elemental_amulet',
+  'temporal_boots',
+  'lewis',
+  'syllas',
+  'amsug',
+  'vampiric_crown',
+  'divine_chalice',
+  'naria',
+]);
+
+export function isSummonSupported(def: SeasonsCardDef): boolean {
+  const effect = summonEffectOf(def);
+  if (!effect) return false;
+  const key = summonEffectKey(effect);
+  return key in SUMMON_EFFECTS || SUMMON_CHOICE_KEYS.has(key);
+}
 
 /**
  * 召唤该卡是否需要尚未实现的玩家选择。
@@ -272,12 +510,22 @@ export interface SummonChoiceRequest {
   card?: CardRef;
   points?: number;
   branches?: { id: string; label?: string; enabled?: boolean }[];
+  /** card_pick：其余牌按顺序放到弃牌堆底（复活药剂）。 */
+  bottomRest?: boolean;
+  /** card_list：候选牌只用于排序，确认后放回牌堆顶。 */
+  orderOnly?: boolean;
+  /** 已由请求携带的候选牌；没有时由 pendingCards 提供。 */
+  cards?: CardRef[];
   /** element_alloc：允许只分配一部分（路易斯复制）。 */
   allowPartial?: boolean;
   /** multi_player_pick：依次由这些座位的玩家选择（西拉斯/阿姆苏格）。 */
   players?: number[];
   /** sacrifice：选 1 张在场卡进弃牌；return：选 1 张魔法物品回手。 */
   purpose?: 'sacrifice' | 'return' | 'discard';
+  /** 可跳过；用于“你可以”类触发。 */
+  optional?: boolean;
+  /** Owner seat of the effect source, used when the resolving player can differ. */
+  sourceSeat?: number;
 }
 
 /**
@@ -293,6 +541,154 @@ export function summonChoiceFor(
   const effect = summonEffectOf(def);
   if (!effect) return null;
   const key = summonEffectKey(effect);
+
+  if (key === 'throne_of_renewal') {
+    return state.players[seat]?.hand.length
+      ? {
+          kind: 'card_pick',
+          key: 'throne_of_renewal',
+          title: '复生王座：选择一张手牌弃掉',
+          label: '弃掉',
+          purpose: 'discard',
+        }
+      : null;
+  }
+
+  if (key === 'selenias_codex') {
+    const me = state.players[seat];
+    const candidates =
+      me?.played.filter((card) => {
+        const def = cardById(card.i);
+        return Boolean(def && printedCardType(me!, card) === 'magic_item' &&
+          (def.costFlexible || ELEMENTS.some((element) => def.cost[element] > 0)));
+      }) ?? [];
+    return candidates.length
+      ? {
+          kind: 'card_pick',
+          key: 'selenias_codex',
+          title: '赛琳娜的法典：选择一张含能量费用的魔器回手',
+          label: '回手',
+          purpose: 'return',
+          optional: true,
+          cards: candidates,
+        }
+      : null;
+  }
+
+  if (key === 'scroll_of_ishtar') {
+    return {
+      kind: 'branch',
+      key: 'scroll_of_ishtar',
+      title: '伊斯塔的卷轴：选择要寻找的能量类型',
+      label: '寻找',
+      branches: ELEMENTS.map((element) => ({ id: element, label: `${ELEMENT_NAME_ZH[element]}元素` })),
+    };
+  }
+
+  if (key === 'familiar_catcher') {
+    return {
+      kind: 'branch',
+      key: 'familiar_catcher',
+      title: '精灵捕捉网：翻到第一张神仆',
+      label: '翻开',
+      branches: [{ id: 'reveal', label: '从牌堆顶开始翻牌' }],
+    };
+  }
+
+  if (key === 'raven_the_usurper') {
+    const targets = state.players
+      .filter((player) => player.seat !== seat)
+      .flatMap((player) =>
+        player.played
+          .filter((card) => printedCardType(player, card) === 'magic_item')
+          .map((card) => ({ ...card, seat: player.seat })),
+      );
+    return targets.length
+      ? {
+          kind: 'card_pick',
+          key: 'raven_the_usurper',
+          title: '篡夺渡鸦：选择一张对手魔器复制',
+          label: '复制',
+          cards: targets,
+        }
+      : null;
+  }
+
+  if (key === 'warden_of_argos') {
+    return {
+      kind: 'branch',
+      key: 'warden_of_argos',
+      title: '冥界狱犬：选择全桌效果',
+      label: '确认',
+      branches: [
+        { id: 'energy', label: '每位玩家弃 4 个能量' },
+        { id: 'cards', label: '每位玩家弃 1 张魔法牌' },
+      ],
+    };
+  }
+
+  if (key === 'ratty_nightshade') {
+    return null;
+  }
+
+  if (key === 'sepulchral_amulet') {
+    const cards = state.discard.slice(-3).reverse();
+    return cards.length
+      ? {
+          kind: 'card_pick',
+          key: 'sepulchral_amulet',
+          title: '坟墓护符：先选择加入手牌的 1 张',
+          label: '加入手牌',
+          cards,
+        }
+      : null;
+  }
+
+  if (key === 'argosian_tangleweed') {
+    const targets = state.players
+      .filter((player) => player.seat !== seat)
+      .flatMap((player) =>
+        player.played
+          .filter((card) => printedCardType(player, card) === 'familiar')
+          .map((card) => ({ ...card, seat: player.seat, sourceSeat: seat })),
+      );
+    return targets.length
+      ? {
+          kind: 'card_pick',
+          key: 'argosian_tangleweed',
+          title: '亚苟斯的纠缠：选择一张对手神仆放置锁结',
+          label: '放置锁结',
+          cards: targets,
+          optional: true,
+          sourceSeat: seat,
+        }
+      : null;
+  }
+
+  if (key === 'otus_the_oracle') {
+    return null;
+  }
+
+  if (key === 'crafty_nightshade') {
+    return null;
+  }
+
+  if (key === 'amulet_of_time') {
+    return {
+      kind: 'element_alloc',
+      key: 'amulet_of_time',
+      target: 'reserve',
+      amount: 2,
+      title: '时光护符：选择获得 2 个能量',
+      label: '获得',
+    };
+  }
+  if (key === 'arus_mimicry') {
+    const me = state.players[seat]!;
+    const cards = [...me.hand, ...me.played];
+    return cards.length ? { kind: 'card_pick', key, title: '弃掉手牌或牺牲场牌，获得 12 水晶',
+      label: '确认', cards } : null;
+  }
 
   // 流水护符：从库存取 N 个任意能量置于本卡上。
   if (key === 'gain_energy') {
@@ -350,7 +746,7 @@ export function summonChoiceFor(
     const me = state.players[seat];
     if (!me) return null;
     const others = me.played.filter(
-      (card) => cardById(card.i)?.type === 'magic_item',
+      (card) => printedCardType(me, card) === 'magic_item',
     ).length;
     const per = typeof effect.amount === 'number' ? effect.amount : 1;
     const amount = others * per;
@@ -370,10 +766,12 @@ export function summonChoiceFor(
       return {
         kind: 'element_alloc',
         key: 'elemental_amulet_water',
-        target: 'reserve',
+        // The water payment puts the energy on this amulet, where it stays
+        // available for later summon/transmute payments.
+        target: 'card',
         amount: 2,
-        title: '元素护符（水）：获得 2 个能量',
-        label: '获得',
+        title: '元素护符（水）：选择 2 个能量置于牌上',
+        label: '放置',
       };
     }
     return null;
@@ -389,36 +787,14 @@ export function summonChoiceFor(
     };
   }
 
-  // 灰脸路易斯：复制对手储备中的能量（数量可少于对手全部）。
+  // 灰脸路易斯：仅选择对手，种类和数量随后完整复制。
   if (key === 'lewis') {
-    const opponent = state.players.find((player) => player.seat !== seat);
-    if (!opponent) return null;
-    const counts: Partial<Record<Element, number>> = {};
-    let total = 0;
-    for (const element of ['water', 'air', 'fire', 'earth'] as const) {
-      const onCards = opponent.played.reduce(
-        (sum, card) =>
-          sum +
-          ((cardById(card.i)?.effect?.abilities ?? []).some(
-            (ability) => ability.kind === 'reserve_slot',
-          )
-            ? (card.stored?.[element] ?? 0)
-            : 0),
-        0,
-      );
-      const count = (opponent.energies[element] ?? 0) + onCards;
-      counts[element] = count;
-      total += count;
-    }
-    if (total <= 0) return null;
     return {
-      kind: 'element_alloc',
+      kind: 'branch',
       key: 'lewis',
-      target: 'reserve',
-      amount: total,
-      maxPerElement: counts,
-      allowPartial: true,
-      title: '选择要复制的能量（可少于对手全部）',
+      branches: state.players.filter((player) => player.seat !== seat)
+        .map((player) => ({ id: String(player.seat), label: `玩家 ${player.seat + 1}` })),
+      title: '选择一位对手，完整复制其储备能量',
       label: '复制',
     };
   }
@@ -443,7 +819,7 @@ export function summonChoiceFor(
   if (key === 'amsug') {
     const hasItem = (player: SeasonsState['players'][number]) =>
       player.played.some(
-        (card) => cardById(card.i)?.type === 'magic_item',
+        (card) => printedCardType(player, card) === 'magic_item',
       );
     const targets = state.players.filter(hasItem).map((player) => player.seat);
     if (targets.length === 0) return null;
@@ -506,7 +882,7 @@ export function summonChoiceFor(
     };
   }
 
-  return key in SUMMON_EFFECTS ? null : 'unimplemented';
+  return isSummonSupported(def) ? null : 'unimplemented';
 }
 
 /** 执行召唤时效果；未注册时原样返回（调用方应先检查 isSummonEffectImplemented）。 */

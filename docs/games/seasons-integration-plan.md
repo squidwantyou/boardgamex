@@ -83,6 +83,31 @@
 - 回滚：保留部署前的 `/opt/bgx/app` 与 `/var/www/bgx` 快照；或 `git reset --hard <旧提交>` 后重跑部署脚本。
 - 交付分支不删除；整合完成后在 `TO_GPT.md` 记录「已合并/已部署」与两仓提交。
 
+## 6. 本地整合演练结果（2026-11-28 04:00–04:40，分支 `integrate-f47aa07`）
+
+已把交付的插件 + 宿主改动摘录到 `bgx` 的本地分支 `integrate-f47aa07`（未合并 main、未推送、未部署），结果：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm --filter @bgx/protocol build` | ✅ |
+| `pnpm --filter @bgx/server test` | ✅ **9 文件 955 项全绿**（engine 160 / rework 471 / card-workbook 271 / sessions 2 / protocol 6 / 其他） |
+| `pnpm --filter @bgx/server build` | ✅ |
+| `pnpm --filter @bgx/web build` | ✅ 725.42 kB JS + 59.92 kB CSS |
+| `pnpm --filter @bgx/web smoke` | ✅ 1194 次渲染（**断言已改写**：新布局无 `ss-band-top`/`ss-spectator`/`ss-hints`/`ss-modal`，改为 `ss-table`/`ss-log-tools`/`ss-inline-choice`/`ss-die-`；能量重分配候选按 `current+incoming` 上限生成） |
+| 90 张卡图 + 91 个 labelled 文件 sha256 对照 `docs/seasons-assets.json` | ✅ miss 0 / bad 0 |
+| 骰面 120 张 | ✅ 保留 main 的冬季 2 号骰 4/6 修正，未被交付分支覆盖 |
+| 旧 `oracle-seasons.mjs` | ⚠️ 不适用：其基线是旧 50 卡数据，交付按 Excel 改了 33 张费用/分数；由 `card-workbook.test.ts`（271 项）取代 |
+| 旧 `oracle-seasons-l1.mjs` | ⚠️ 不适用：同上，且新 `energy_swap` 选择形状变了；不再作为验收门槛 |
+| `verify-seasons-assets.mjs` | ⏸ 需要 `sharp` devDependency，本次未安装（用 node crypto 手动校验哈希通过） |
+
+结论：**技术上可以整合**。剩余动作：确认是否把 `integrate-f47aa07` 合入 main、是否安装 sharp/playwright、是否部署。
+
+## 7. 与交付方的差异（并入 main 时需要说明）
+
+- 保留我方 F9.2/F10.1/F10.2 的能力（观战跟随、骰面图例、手牌排序）与冬季骰面修正；交付分支没有这些，合并时不要回退。
+- 交付 UI 用内联选择条（`ss-inline-choice`）取代弹窗，术语浮层/卡牌详情/结算表均重写；旧 smoke 断言已按新 UI 改写。
+- 交付新增 `card-workbook.test.ts` 作为卡表真源（Excel 271 断言），旧 50 卡 oracle 降级为历史脚本。
+
 ## 5. 已知缺口
 
 - 旧 SSR smoke 断言未更新（交付方如实标注，不算通过）。

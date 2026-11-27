@@ -24,7 +24,9 @@ const MAX_SHOWN = 80;
  * F8.3a 复盘日志：按类别筛选、展开全部、自动滚到最新。
  * 只读 SeasonsLogEntry，不新增协议字段。
  */
-export function LogPanel({ game }: { game: SeasonsGameView }) {
+export function LogPanel({ game, formatMessage = (message) => message }: {
+  game: SeasonsGameView; formatMessage?: (message: string) => string;
+}) {
   const [filter, setFilter] = useState<FilterId>('all');
   const [expanded, setExpanded] = useState(false);
   const listRef = useRef<HTMLOListElement | null>(null);
@@ -36,7 +38,7 @@ export function LogPanel({ game }: { game: SeasonsGameView }) {
   }, [game.log, active]);
 
   const limit = expanded ? MAX_SHOWN : COLLAPSED;
-  const shown = filtered.slice(-limit);
+  const shown = filtered.slice(-limit).reverse();
   const counts = useMemo(() => {
     const map = new Map<FilterId, number>();
     for (const item of FILTERS) {
@@ -51,7 +53,7 @@ export function LogPanel({ game }: { game: SeasonsGameView }) {
   useEffect(() => {
     if (!expanded) return;
     const node = listRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
+    if (node) node.scrollTop = 0;
   }, [expanded, game.log.length]);
 
   return (
@@ -84,13 +86,14 @@ export function LogPanel({ game }: { game: SeasonsGameView }) {
       {shown.length === 0 ? (
         <p className="ss-muted">这个分类还没有记录</p>
       ) : (
-        <ol ref={listRef} className={expanded ? 'ss-log-full' : undefined}>
+        <ol ref={listRef} reversed start={shown[0]?.seq ?? game.log.length} className={expanded ? 'ss-log-full' : undefined}>
           {shown.map((entry, index) => (
             <li
               key={`${entry.t}-${index}-${entry.msg.slice(0, 8)}`}
+              value={entry.seq ?? game.log.indexOf(entry) + 1}
               className={`ss-log-${entry.t}`}
             >
-              {entry.msg}
+              {formatMessage(entry.msg)}
             </li>
           ))}
         </ol>

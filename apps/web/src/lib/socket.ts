@@ -9,6 +9,7 @@ export function connectSocket(): Socket {
     path: `${import.meta.env.BASE_URL}socket.io`,
     transports: ['websocket'],
     withCredentials: true,
+    autoConnect: false,
     reconnection: true,
     reconnectionDelay: 600,
     reconnectionDelayMax: 4000,

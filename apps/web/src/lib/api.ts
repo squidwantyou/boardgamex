@@ -56,6 +56,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   me: () => request<{ user: Me }>('/me'),
+  debugSession: () => request<{
+    user: { id: string } | null;
+    cookieCount: number;
+    cookieFingerprints: string[];
+    headerFingerprint: string;
+  }>('/debug/session'),
   rename: (name: string) =>
     request<{ user: Me }>('/me/name', {
       method: 'POST',
@@ -117,8 +123,12 @@ export function setCachedMe(me: Me): void {
   mePromise = Promise.resolve(me);
 }
 
-export function loadMe(): Promise<Me> {
-  if (meCache) return Promise.resolve(meCache);
+export function loadMe(options: { refresh?: boolean } = {}): Promise<Me> {
+  if (meCache && !options.refresh) return Promise.resolve(meCache);
+  if (options.refresh) {
+    meCache = null;
+    mePromise = null;
+  }
   if (!mePromise) {
     mePromise = api
       .me()

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ELEMENTS,
   seasonsDefaultOptions,
   type CardRef,
+  type Element,
   type SeasonsAction,
   type SeasonsCardDef,
 } from '@bgx/protocol/games/seasons';
@@ -14,9 +16,10 @@ import {
   EXT2_CARDS,
   SEASONS_CARDS,
 } from './cards/base.js';
-import { validateCardPool } from './cards/support.js';
+import { cardSupportIssues, declaredTriggersOf, validateCardPool } from './cards/support.js';
 import { registerCards, unregisterCards } from './cards/registry.js';
 import { summonEffectKey, summonEffectOf } from './cards/effects.js';
+import { energySum } from './rules/play.js';
 import { seasons, type SeasonsState } from './engine.js';
 
 const rng = createRng('seasons-test');
@@ -39,7 +42,7 @@ function apply(
 /** 双方完成组牌，进入对局阶段。 */
 function toPlay(state: SeasonsState): SeasonsState {
   let next = state;
-  for (const seat of [0, 1]) {
+  for (let seat = 0; seat < state.players.length; seat += 1) {
     const uids = next.players[seat]?.drafted.map((c) => c.u) ?? [];
     next = apply(next, seat, {
       type: 'organize',
@@ -65,6 +68,72 @@ function draftAll(state: SeasonsState): SeasonsState {
   }
   return next;
 }
+
+describe('seasons 扩展包', () => {
+  const withExtensions = (...extensions: Array<'base' | 'ext1' | 'ext2'>) =>
+    seasons.setup(2, { extensions }, createRng('ext-seed'));
+
+  it('ext1 追加 40 张牌（20 种 × 2 张），uid 连续且唯一', () => {
+    const cards = [...BASE_CARDS, ...EXT1_CARDS];
+    const expected = cards.reduce((sum) => sum + 2, 0);
+    expect(expected).toBe(140);
+    expect(EXT1_CARDS).toHaveLength(20);
+    expect(new Set(EXT1_CARDS.map((card) => card.id)).size).toBe(20);
+    expect(cards.some((card) => EXT1_CARDS.some((def) => def.id === card.id))).toBe(true);
+    expect(cards.some((card) => EXT2_CARDS.some((def) => def.id === card.id))).toBe(false);
+  });
+
+  it('ext1 + ext2 共 180 张牌（每人 9 张后剩 162）', () => {
+    expect(SEASONS_CARDS).toHaveLength(90);
+    expect(EXT1_CARDS).toHaveLength(20);
+    expect(EXT2_CARDS).toHaveLength(20);
+  });
+
+  it('缺少 base 时拒绝开局', () => {
+    expect(() => withExtensions('ext1')).toThrow('基础卡包（base）是必选项');
+  });
+
+  it('两套扩展都能通过完整卡池校验并进入轮抽', () => {
+    const state = seasons.setup(
+      2,
+      { extensions: ['base', 'ext1', 'ext2'] },
+      createRng('ext-seed'),
+    );
+    expect(state.players.flatMap((player) => player.draftHand)).toHaveLength(18);
+    expect(state.deck).toHaveLength(162);
+    expect(validateCardPool(SEASONS_CARDS)).toEqual([]);
+  });
+});
+
+describe('seasons 扩展包激活效果', () => {
+  const playState = () => toPlay(draftAll(setup('ext-act')));
+
+  function setupActivation(cardId: number) {
+    const base = playState();
+    const state: SeasonsState = {
+      ...base,
+      turnOwner: 0,
+      players: [
+        {
+          ...base.players[0]!,
+          hand: [...base.players[0]!.hand, { i: cardId, u: 8800 }],
+          gauge: base.players[0]!.played.length + 1,
+          energies: { water: 5, air: 5, fire: 5, earth: 5 },
+          maxEnergy: 40,
+          crystals: 0,
+        },
+        base.players[1]!,
+      ],
+    };
+    const summoned = apply(state, 0, { type: 'summon', cardUid: 8800 });
+    expect(summoned.players[0]?.played.some((card) => card.u === 8800)).toBe(true);
+    return { state: summoned };
+  }
+
+  it('扩展牌池开局后可以直接进入行动阶段', () => {
+    expect(playState().phase).toBe('play');
+  });
+});
 
 describe('seasons setup', () => {
   it('2 人局：每人 9 张轮抽牌，牌堆剩 82 张，实例 uid 唯一', () => {
@@ -386,9 +455,17 @@ describe('seasons dice', () => {
     expect(second.currentPicker).toBe(0);
     expect(second.pickedThisSeason).toEqual([]);
 
-    const after = seasons.reduce(second, 0, { type: 'draft-dice', dieIndex: 0 }, ctx);
-    expect(after.ok).toBe(false);
-    if (!after.ok) expect(after.code).toBe('action_phase');
+    // 选满骰后先建立首位玩家的骰面抽牌待决，不能绕过该待决另选骰。
+    const pendingDieDraw = second.pendingChoice?.key === 'die_draw';
+    const after = seasons.reduce(
+      second,
+      0,
+      { type: pendingDieDraw ? 'resolve-choice' : 'draft-dice', ...(pendingDieDraw
+        ? { choice: [second.pendingCards![0]!.u] }
+        : { dieIndex: 0 }) } as SeasonsAction,
+      ctx,
+    );
+    expect(after.ok).toBe(true);
   });
 
   it('拒绝非法骰子索引与阶段外的选骰', () => {
@@ -566,6 +643,25 @@ function actionPhase(seed = 'seasons-test'): SeasonsState {
   return apply(picked, 1, { type: 'draft-dice', dieIndex: 1 });
 }
 
+function actionPhaseForSeats(
+  playerCount: number,
+  seed = 'seasons-test',
+): SeasonsState {
+  let next = seasons.setup(playerCount, seasonsDefaultOptions, createRng(seed));
+  while (next.phase === 'draft') {
+    for (let seat = 0; seat < playerCount; seat += 1) {
+      const card = next.players[seat]?.draftHand[0];
+      if (!card) throw new Error('轮抽手牌为空');
+      next = apply(next, seat, { type: 'draft-pick', cardUid: card.u });
+    }
+  }
+  next = toPlay(next);
+  for (let seat = 0; seat < playerCount; seat += 1) {
+    next = apply(next, seat, { type: 'draft-dice', dieIndex: seat });
+  }
+  return next;
+}
+
 describe('seasons 卡池框架', () => {
   it('骰子季节：100 张恶意之骰', () => {
     const state = seasons.setup(2, { pool: 'dice_season' }, createRng('dice-season'));
@@ -588,8 +684,41 @@ describe('seasons 卡池框架', () => {
     }
   });
 
-  it('全部 50 张基础卡都通过卡池校验', () => {
+  it('全部 90 张卡（基础 + 扩展）都通过卡池校验', () => {
+    expect(validateCardPool(BASE_CARDS)).toEqual([]);
     expect(validateCardPool(SEASONS_CARDS)).toEqual([]);
+  });
+
+  it('支持扫描只看真实分发入口，缺 handler 的附加触发不会被白名单放行', () => {
+    const fake: SeasonsCardDef = {
+      ...BASE_CARDS[0]!,
+      id: 9002,
+      nameZh: '缺处理程序测试卡',
+      effect: {
+        trigger: 'on_summon',
+        type: 'not_a_real_key',
+        triggers: ['on_summon', 'activation'],
+      },
+      cost: { water: 0, air: 0, fire: 0, earth: 0, crystal: 0 },
+    };
+    const issues = cardSupportIssues(fake);
+    expect(issues.map((issue) => issue.code)).toEqual([
+      'summon_handler_missing',
+      'activation_handler_missing',
+    ]);
+    expect(validateCardPool([...BASE_CARDS, fake])).toContainEqual({
+      cardId: fake.id,
+      message: '召唤入口缺少处理程序：on_summon → not_a_real_key',
+    });
+  });
+
+  it('邪神之心是每回合一次的被动效果，不伪装成主动激活', () => {
+    const heart = EXT1_CARDS.find((card) => card.id === 51);
+    expect(heart).toBeDefined();
+    if (!heart) return;
+    expect(declaredTriggersOf(heart)).toEqual(['permanent']);
+    expect(heart.effect?.abilities?.some((ability) => ability.kind === 'sealed_energy')).toBe(true);
+    expect(cardSupportIssues(heart)).toEqual([]);
   });
 
   it('未登记的效果 key 会被校验拦下，并在 setup 时报错', () => {
@@ -600,7 +729,10 @@ describe('seasons 卡池框架', () => {
       effect: { trigger: 'on_summon', type: 'not_a_real_key' },
     };
     const issues = validateCardPool([...BASE_CARDS, fake]);
-    expect(issues).toContainEqual({ cardId: 9001, message: '效果未实现：on_summon → not_a_real_key' });
+    expect(issues).toContainEqual({
+      cardId: 9001,
+      message: '召唤入口缺少处理程序：on_summon → not_a_real_key',
+    });
     registerCards([fake]);
     try {
       expect(() =>
@@ -661,7 +793,7 @@ describe('seasons 储备语义（卡上能量 = 储备区）', () => {
       ),
     };
     const res = seasons.reduce(state, 0, { type: 'summon', cardUid: 7000 }, ctx);
-    expect(res.ok).toBe(true);
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
     if (!res.ok) return;
     const me = res.state.players[0]!;
     expect(me.energies.water).toBe(0);
@@ -682,7 +814,7 @@ describe('seasons 储备语义（卡上能量 = 储备区）', () => {
               gauge: 5,
               maxEnergy: 10,
               crystals: 0,
-              energies: { water: 5, air: 0, fire: 5, earth: 0 },
+              energies: { water: 5, air: 5, fire: 0, earth: 0 },
               hand: [{ i: 17, u: 7000 }],
               played: [{ i: 18, u: 7001 }],
             }
@@ -704,7 +836,7 @@ describe('seasons 储备语义（卡上能量 = 储备区）', () => {
     if (!returned.ok) return;
     expect(returned.state.players[0]?.maxEnergy).toBe(7);
     expect(returned.state.players[0]?.energies.water).toBe(4);
-    expect(returned.state.players[0]?.energies.fire).toBe(4);
+    expect(returned.state.players[0]?.energies.air).toBe(4);
     expect(returned.state.pendingChoice?.kind).toBe('energy_discard');
     expect(returned.state.pendingChoice?.options.amount).toBe(1);
 
@@ -718,7 +850,7 @@ describe('seasons 储备语义（卡上能量 = 储备区）', () => {
     if (!discard.ok) return;
     expect(discard.state.pendingChoice).toBeNull();
     expect(discard.state.players[0]?.energies.water).toBe(3);
-    expect(discard.state.players[0]?.energies.fire).toBe(4);
+    expect(discard.state.players[0]?.energies.air).toBe(4);
   });
 
   it('energy_discard 的可用能量只对本人可见', () => {
@@ -761,7 +893,7 @@ describe('seasons 储备语义（卡上能量 = 储备区）', () => {
           ? {
               ...player,
               energies: { water: 0, air: 0, fire: 0, earth: 0 },
-              played: [...player.played, { i: amulet.id, u: 9401, stored: { fire: 2 } }],
+               played: [...player.played, { i: amulet.id, u: 9401, stored: { fire: 2 } }],
               hand: [{ i: target.id, u: 9402 }, ...player.hand],
             }
           : player,
@@ -869,11 +1001,17 @@ describe('seasons die rewards', () => {
       earth: 0,
     });
 
-    const swapped = apply(picked, 0, {
+    const invalid = seasons.reduce(picked, 0, {
       type: 'resolve-choice',
       choice: { water: 5, air: 2, fire: 0, earth: 0 },
+    }, ctx);
+    expect(invalid.ok).toBe(false);
+    expect(picked.players[0]?.energies).toEqual({ water: 6, air: 1, fire: 0, earth: 0 });
+    const swapped = apply(picked, 0, {
+      type: 'resolve-choice',
+      choice: { water: 6, air: 1, fire: 0, earth: 0 },
     });
-    expect(swapped.players[0]?.energies).toEqual({ water: 5, air: 2, fire: 0, earth: 0 });
+    expect(swapped.players[0]?.energies).toEqual({ water: 6, air: 1, fire: 0, earth: 0 });
     expect(swapped.pendingChoice).toBeNull();
     expect(swapped.log.some((entry) => entry.msg.includes('重新分配能量'))).toBe(true);
   });
@@ -1013,6 +1151,436 @@ function findDef(predicate: (def: (typeof BASE_CARDS)[number]) => boolean) {
   return def;
 }
 
+describe('Magma Core summon triggers', () => {
+  const CORE_UID = 7600;
+  const summonUid = 7601;
+  const freeUid = 7602;
+  const normalMagicItem = BASE_CARDS.find((card) => card.id === 46);
+  const normalFamiliar = BASE_CARDS.find((card) => card.id === 39);
+  const plain = BASE_CARDS.find((card) => card.id === 15);
+  const freeSource = BASE_CARDS.find((card) => card.id === 24);
+  if (!normalMagicItem || !normalFamiliar || !plain || !freeSource) {
+    throw new Error('熔岩核夹具缺少召唤用卡牌');
+  }
+
+  function magmaReady(
+    players = 2,
+    summonCard: SeasonsCardDef = normalMagicItem,
+    options: {
+      seed?: string;
+      payerFire?: number;
+      maxEnergy?: number;
+      extraPlayed?: { i: number; u: number }[];
+      coreUids?: number[];
+      extraCoresBySeat?: Partial<Record<number, number[]>>;
+      hand?: CardRef[];
+    } = {},
+  ): SeasonsState {
+    const base =
+      players === 2
+        ? actionPhase(options.seed ?? 'magma-core')
+        : actionPhaseForSeats(players, options.seed ?? 'magma-core');
+    const core = EXT2_CARDS.find((card) => card.id === 72);
+    if (!core) throw new Error('熔岩核夹具缺少熔岩核');
+    const coreUids = options.coreUids ?? [CORE_UID];
+    const payerFire = options.payerFire ?? 9;
+    const state: SeasonsState = {
+      ...base,
+      players: Array.from({ length: players }, (_, seat) => ({
+        ...(base.players[seat] ?? base.players[seat % base.players.length]!),
+        seat,
+        gauge: 12,
+        maxEnergy: options.maxEnergy ?? 40,
+        crystals: 20,
+        energies: {
+          water: 9,
+          air: 9,
+          fire: seat === 0 ? payerFire : 9,
+          earth: 9,
+        },
+        played:
+          seat === 1
+            ? coreUids.map((uid) => ({ i: core.id, u: uid }))
+            : seat === 0
+              ? (options.extraPlayed ?? [])
+              : (options.extraCoresBySeat?.[seat] ?? []).map((uid) => ({
+                  i: core.id,
+                  u: uid,
+                })),
+        hand:
+          seat === 0
+            ? (options.hand ?? [{ i: summonCard.id, u: summonUid }])
+            : [{ i: plain.id, u: 7700 + seat }],
+      })),
+      turnOwner: 0,
+      currentPicker: 0,
+      dicePicked: Array.from({ length: players }, (_, seat) => seat),
+      pendingChoice: null,
+      pendingQueue: [],
+    };
+    return state;
+  }
+
+  function resolveCardChoice(
+    state: SeasonsState,
+    seat: number,
+    uid: number,
+  ): ReturnType<typeof seasons.reduce> {
+    return seasons.reduce(
+      state,
+      seat,
+      { type: 'resolve-choice', choice: { uid } },
+      ctx,
+    );
+  }
+
+  it('normal magic-item summon pays fire, triggers once, and logs id/uid', () => {
+    const state = magmaReady();
+    const res = seasons.reduce(state, 0, { type: 'summon', cardUid: summonUid }, ctx);
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
+    if (!res.ok) return;
+    expect(res.state.players[0]?.played.some((card) => card.u === summonUid)).toBe(true);
+    expect(res.state.players[0]?.energies.fire).toBe(9);
+    expect(res.state.players[0]?.energies.water).toBe(7);
+    expect(res.state.players[0]?.energies.earth).toBe(8);
+    expect(res.state.players[0]?.played.at(-1)?.i).toBe(normalMagicItem.id);
+    expect(res.state.pendingChoice).toBeNull();
+    expect(res.state.players[1]?.energies.fire).toBe(10);
+      expect(res.events).toContainEqual({
+        type: 'summon',
+        seat: 0,
+        summonerSeat: 0,
+        cardUid: summonUid,
+        cardId: normalMagicItem.id,
+        origin: 'normal',
+        actionSeq: state.actionSeq + 1,
+      });
+    const log = res.state.log.find((entry) => entry.msg.includes('熔岩核'))?.msg ?? '';
+    expect(log).toContain(`#${normalMagicItem.id}`);
+    expect(log).toContain(`UID ${summonUid}`);
+
+    const replay = seasons.reduce(
+      res.state,
+      1,
+      { type: 'resolve-choice', choice: { fire: 1 } },
+      ctx,
+    );
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.code).toBe('no_pending_choice');
+    expect(res.state.players[1]?.energies.fire).toBe(10);
+  });
+
+  it('a standard familiar summon also grants one fire', () => {
+    const res = seasons.reduce(
+      magmaReady(2, normalFamiliar),
+      0,
+      { type: 'summon', cardUid: summonUid },
+      ctx,
+    );
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
+    if (!res.ok) return;
+    expect(res.state.players[0]?.played.at(-1)?.i).toBe(normalFamiliar.id);
+    expect(res.state.pendingChoice).toBeNull();
+    expect(res.state.players[1]?.energies.fire).toBe(10);
+  });
+
+  it('does not trigger Magma Core when the summoner plays their own card', () => {
+    const state = magmaReady();
+    const withOwnCore: SeasonsState = {
+      ...state,
+      players: state.players.map((player) =>
+        player.seat === 0
+          ? { ...player, played: [{ i: 72, u: 7602 }, ...player.played] }
+          : { ...player, played: [] },
+      ),
+    };
+    const res = seasons.reduce(withOwnCore, 0, { type: 'summon', cardUid: 7601 }, ctx);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state.pendingChoice).toBeNull();
+    expect(withOwnCore.players[0]?.energies.fire).toBe(9);
+    expect(res.state.players[0]?.played.some((card) => card.u === 7601)).toBe(true);
+    expect(res.state.log.some((entry) => entry.msg.includes('熔岩核'))).toBe(false);
+  });
+
+  it('free-effect summon skips Magma Core but still resolves its normal summon effect', () => {
+    const state: SeasonsState = {
+      ...magmaReady(2, plain, {
+        hand: [{ i: freeSource.id, u: 7790 }],
+      }),
+      players: magmaReady(2, plain, {
+        hand: [{ i: freeSource.id, u: 7790 }],
+      }).players.map((player) =>
+        player.seat === 0
+          ? {
+              ...player,
+              played: [{ i: freeSource.id, u: freeUid }],
+            }
+          : player,
+      ),
+      turnOwner: 0,
+    };
+    const payment = apply(state, 0, { type: 'activate', cardUid: freeUid });
+    const started = apply(payment, 0, { type: 'resolve-choice', choice: state.players[0]!.energies });
+    expect(started.pendingChoice?.key).toBe('potion_dreams');
+    expect(started.pendingCards?.some((card) => card.u === 7790)).toBe(true);
+    const result = resolveCardChoice(started, 0, 7790);
+    expect(result.ok, result.ok ? '' : `${result.code}: ${result.message}`).toBe(true);
+    if (!result.ok) return;
+    expect(result.state.players[0]?.played.some((card) => card.u === 7790)).toBe(true);
+    expect(result.state.pendingChoice).toBeNull();
+    expect(result.state.players[1]?.energies.fire).toBe(9);
+    expect(result.state.log.some((entry) => entry.msg.includes('熔岩核'))).toBe(false);
+      expect(result.events).toContainEqual(
+        expect.objectContaining({
+          type: 'summon',
+          summonerSeat: 0,
+          cardUid: 7790,
+          origin: 'freeEffect',
+        }),
+      );
+  });
+
+  it('failed normal summons do not trigger or mutate the table', () => {
+    const state = magmaReady();
+    const poor: SeasonsState = {
+      ...state,
+      players: state.players.map((player) =>
+        player.seat === 0
+          ? { ...player, energies: { water: 0, air: 0, fire: 0, earth: 0 }, crystals: 0 }
+          : player,
+      ),
+    };
+    const failed = seasons.reduce(poor, 0, { type: 'summon', cardUid: summonUid }, ctx);
+    expect(failed.ok).toBe(false);
+    if (!failed.ok) expect(failed.code).toBe('cant_afford');
+    expect(poor.players[0]?.hand.some((card) => card.u === summonUid)).toBe(true);
+    expect(poor.players[1]?.energies.fire).toBe(9);
+    expect(poor.pendingChoice).toBeNull();
+    expect(poor.pendingQueue).toEqual([]);
+
+    const wrongSeat = seasons.reduce(state, 1, { type: 'summon', cardUid: summonUid }, ctx);
+    expect(wrongSeat.ok).toBe(false);
+    if (!wrongSeat.ok) expect(wrongSeat.code).toBe('not_your_turn');
+    expect(state.pendingQueue).toEqual([]);
+    expect(state.players[1]?.energies.fire).toBe(9);
+  });
+
+  it('two Magma Core instances automatically grant one fire each, never double-award', () => {
+    const state = magmaReady(2, plain, {
+      coreUids: [7801, 7802],
+    });
+    const res = seasons.reduce(state, 0, { type: 'summon', cardUid: summonUid }, ctx);
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
+    if (!res.ok) return;
+    expect(res.state.pendingChoice).toBeNull();
+    expect(res.state.pendingQueue).toHaveLength(0);
+    expect(res.state.players[1]?.energies.fire).toBe(11);
+
+    const replay = seasons.reduce(
+      res.state,
+      1,
+      { type: 'resolve-choice', choice: { fire: 1 } },
+      ctx,
+    );
+    expect(replay.ok).toBe(false);
+    expect(res.state.players[1]?.energies.fire).toBe(11);
+  });
+
+  it('a full reserve asks for a legal energy swap instead of exceeding max', () => {
+    const state = magmaReady(2, plain, { maxEnergy: 9 });
+    state.players[1]!.energies = { water: 0, air: 0, fire: 9, earth: 0 };
+    const res = seasons.reduce(state, 0, { type: 'summon', cardUid: summonUid }, ctx);
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
+    if (!res.ok) return;
+    expect(res.state.pendingChoice?.kind).toBe('energy_swap');
+    expect(res.state.pendingChoice?.options.discardAmount).toBe(1);
+    expect(res.state.players[1]?.energies.fire).toBe(9);
+  });
+
+  it('activating Magma Core sacrifices it once and grants exactly 3 fire', () => {
+    const state = magmaReady(2, plain, {
+      maxEnergy: 40,
+      extraPlayed: [{ i: 72, u: 7901 }],
+    });
+    const started = seasons.reduce(state, 0, { type: 'activate', cardUid: 7901 }, ctx);
+    expect(started.ok, started.ok ? '' : `${started.code}: ${started.message}`).toBe(true);
+    if (!started.ok) return;
+    expect(started.state.pendingChoice?.key).toBe('magma_core_shield');
+    expect(started.state.players[0]?.played.some((card) => card.u === 7901)).toBe(true);
+    expect(started.state.players[0]?.energies.fire).toBe(9);
+    const result = seasons.reduce(
+      started.state,
+      0,
+      { type: 'resolve-choice', choice: 'sacrifice' },
+      ctx,
+    );
+    expect(result.ok, result.ok ? '' : `${result.code}: ${result.message}`).toBe(true);
+    if (!result.ok) return;
+    expect(result.state.players[0]?.played.some((card) => card.u === 7901)).toBe(false);
+    expect(result.state.discard.some((card) => card.u === 7901)).toBe(true);
+    expect(result.state.players[0]?.energies.fire).toBe(12);
+    const replay = seasons.reduce(
+      result.state,
+      0,
+      { type: 'activate', cardUid: 7901 },
+      ctx,
+    );
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.code).toBe('card_not_in_play');
+  });
+
+  it('Shield of Zira can replace Magma Core sacrifice while still giving 3 fire', () => {
+    const state = magmaReady(2, plain, {
+      maxEnergy: 40,
+      extraPlayed: [
+        { i: 72, u: 7911 },
+        { i: 63, u: 7912 },
+      ],
+    });
+    const started = seasons.reduce(state, 0, { type: 'activate', cardUid: 7911 }, ctx);
+    expect(started.ok, started.ok ? '' : `${started.code}: ${started.message}`).toBe(true);
+    if (!started.ok) return;
+    const branches = started.state.pendingChoice?.options.branches as
+      | { id: string }[]
+      | undefined;
+    expect(branches?.map((branch) => branch.id)).toEqual(['sacrifice', 'shield']);
+    const result = seasons.reduce(
+      started.state,
+      0,
+      { type: 'resolve-choice', choice: 'shield' },
+      ctx,
+    );
+    expect(result.ok, result.ok ? '' : `${result.code}: ${result.message}`).toBe(true);
+    if (!result.ok) return;
+    expect(result.state.players[0]?.played.some((card) => card.u === 7911)).toBe(true);
+    expect(result.state.players[0]?.played.some((card) => card.u === 7912)).toBe(false);
+    expect(result.state.discard.some((card) => card.u === 7912)).toBe(true);
+    expect(result.state.players[0]?.crystals).toBe(30);
+    expect(result.state.players[0]?.energies.fire).toBe(12);
+    expect(result.state.log.some((entry) => entry.msg.includes('席拉之盾'))).toBe(true);
+  });
+
+    it('declining Shield of Zira keeps the shield and sacrifices only Magma Core', () => {
+      const state = magmaReady(2, plain, {
+        maxEnergy: 40,
+        extraPlayed: [
+          { i: 72, u: 7921 },
+          { i: 63, u: 7922 },
+        ],
+      });
+      const started = seasons.reduce(state, 0, { type: 'activate', cardUid: 7921 }, ctx);
+      expect(started.ok, started.ok ? '' : `${started.code}: ${started.message}`).toBe(true);
+      if (!started.ok) return;
+      const result = seasons.reduce(
+        started.state,
+        0,
+        { type: 'resolve-choice', choice: 'sacrifice' },
+        ctx,
+      );
+      expect(result.ok, result.ok ? '' : `${result.code}: ${result.message}`).toBe(true);
+      if (!result.ok) return;
+      expect(result.state.players[0]?.played.some((card) => card.u === 7921)).toBe(false);
+      expect(result.state.discard.some((card) => card.u === 7921)).toBe(true);
+      expect(result.state.players[0]?.played.some((card) => card.u === 7922)).toBe(true);
+      expect(result.state.discard.some((card) => card.u === 7922)).toBe(false);
+      expect(result.state.players[0]?.crystals).toBe(20);
+      expect(result.state.players[0]?.energies.fire).toBe(12);
+    });
+
+    it('activating Magma Core at full reserve queues an energy swap', () => {
+      const base = magmaReady(2, plain, {
+        maxEnergy: 9,
+        extraPlayed: [{ i: 72, u: 7931 }],
+      });
+      const state: SeasonsState = {
+        ...base,
+        players: base.players.map((player) =>
+          player.seat === 0
+            ? { ...player, energies: { water: 0, air: 0, fire: 9, earth: 0 } }
+            : player,
+        ),
+      };
+      const started = seasons.reduce(state, 0, { type: 'activate', cardUid: 7931 }, ctx);
+      expect(started.ok, started.ok ? '' : `${started.code}: ${started.message}`).toBe(true);
+      if (!started.ok) return;
+      const resolution = seasons.reduce(
+        started.state,
+        0,
+        { type: 'resolve-choice', choice: 'sacrifice' },
+        ctx,
+      );
+      expect(resolution.ok, resolution.ok ? '' : `${resolution.code}: ${resolution.message}`).toBe(
+        true,
+      );
+      if (!resolution.ok) return;
+      expect(resolution.state.pendingChoice?.kind).toBe('energy_swap');
+      expect(resolution.state.pendingChoice?.options.total).toBe(9);
+      expect(resolution.state.pendingChoice?.options.pool).toBe(12);
+      expect(resolution.state.players[0]?.energies.fire).toBe(9);
+      const swapped = seasons.reduce(
+        resolution.state,
+        0,
+        { type: 'resolve-choice', choice: { water: 0, air: 0, fire: 9, earth: 0 } },
+        ctx,
+      );
+      expect(swapped.ok, swapped.ok ? '' : `${swapped.code}: ${swapped.message}`).toBe(true);
+      if (!swapped.ok) return;
+      expect(swapped.state.pendingChoice).toBeNull();
+      expect(swapped.state.players[0]?.energies).toEqual({
+        water: 0,
+        air: 0,
+        fire: 9,
+        earth: 0,
+      });
+    });
+
+  for (const players of [3, 4]) {
+    it(`${players}-player Magma Core costs ${players - 1} fire; seated cores queue`, () => {
+      const core = EXT2_CARDS.find((card) => card.id === 72);
+      if (!core) throw new Error('missing Magma Core');
+        const otherCoreUids = Array.from(
+          { length: players - 1 },
+          (_, index) => 7960 + players * 10 + index,
+        );
+        const state = magmaReady(players, core, {
+        payerFire: players + 2,
+          coreUids: [otherCoreUids[0]!],
+        extraCoresBySeat: {
+          1: [otherCoreUids[0]!],
+            2: [otherCoreUids[1]!],
+            ...(players === 4 ? { 3: [otherCoreUids[2]!] } : {}),
+        },
+      });
+      const isolated: SeasonsState = {
+        ...state,
+        players: state.players.map((player) => ({
+          ...player,
+          hand:
+            player.seat === 0
+              ? player.hand.filter((card) => card.u === summonUid)
+              : state.players[players - 1]!.hand,
+        })),
+      };
+      const res = seasons.reduce(isolated, 0, { type: 'summon', cardUid: summonUid }, ctx);
+      expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
+      if (!res.ok) return;
+        expect(res.state.players.map((player) => player.played.map((card) => card.u))).toEqual([
+          [summonUid],
+          [otherCoreUids[0]],
+          [otherCoreUids[1]],
+          ...(players === 4 ? [[otherCoreUids[2]]] : []),
+        ]);
+      expect(res.state.players[0]?.energies.fire).toBe(3);
+      expect(res.state.players[0]?.played.at(-1)?.i).toBe(core.id);
+      expect(res.state.pendingChoice).toBeNull();
+      expect(res.state.pendingQueue).toEqual([]);
+      expect(res.state.players.slice(1).map((player) => player.energies.fire))
+        .toEqual(Array.from({ length: players - 1 }, () => 10));
+    });
+  }
+});
+
 describe('seasons summon', () => {
   it('扣除能量与水晶，手牌进入场上，召唤不结束回合', () => {
     const base = summonReady();
@@ -1150,6 +1718,99 @@ describe('seasons summon', () => {
     expect(after?.crystals).toBe(9 + 5);
   });
 
+});
+
+describe('seasons paid element sources', () => {
+  it('按卡牌 UID 精确扣除同类元素，未选中的卡上元素保留', () => {
+    const state = summonReady();
+    const sourceCard = BASE_CARDS.find((card) => card.id === 18);
+    const targetCard = BASE_CARDS.find(
+      (card) =>
+        card.id !== sourceCard?.id &&
+        !card.costFlexible &&
+        card.cost.fire === 1 &&
+        energySum(card.cost) === 1,
+    );
+    if (!sourceCard || !targetCard) throw new Error('缺少支付来源测试卡');
+    const sourceUid = 9500;
+    const targetUid = 9501;
+    const prepared: SeasonsState = {
+      ...state,
+      players: state.players.map((player) =>
+        player.seat === 0
+          ? {
+              ...player,
+              hand: [{ i: targetCard.id, u: targetUid }],
+              played: [
+                { i: sourceCard.id, u: sourceUid, stored: { fire: 1 } },
+                { i: sourceCard.id, u: sourceUid + 1, stored: { fire: 1 } },
+              ],
+              energies: { water: 9, air: 9, fire: 0, earth: 9 },
+            }
+          : player,
+      ),
+    };
+    const paidElement = 'fire' as const;
+    const res = seasons.reduce(
+      prepared,
+      0,
+      {
+        type: 'summon',
+        cardUid: targetUid,
+        paidSources: [{ element: paidElement, source: 'card', cardUid: sourceUid }],
+      },
+      ctx,
+    );
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
+    if (!res.ok) return;
+    const me = res.state.players[0]!;
+    expect(me.played.find((card) => card.u === sourceUid)?.stored?.[paidElement] ?? 0).toBe(0);
+    expect(me.played.find((card) => card.u === sourceUid + 1)?.stored?.[paidElement] ?? 0).toBe(1);
+  });
+
+  it('来源不足或重复槽位时整笔拒绝，不扣任何元素', () => {
+    const state = summonReady();
+    const targetCard = BASE_CARDS.find((card) =>
+      !card.costFlexible &&
+      energySum(card.cost) === 2 &&
+      ELEMENTS.some((element) => (card.cost[element] ?? 0) === 2),
+    );
+    if (!targetCard) throw new Error('缺少支付来源测试卡');
+    const targetUid = 9510;
+    const prepared: SeasonsState = {
+      ...state,
+      players: state.players.map((player) =>
+        player.seat === 0
+          ? {
+              ...player,
+              hand: [{ i: targetCard.id, u: targetUid }],
+              energies: { water: 9, air: 9, fire: 9, earth: 9 },
+            }
+          : player,
+      ),
+    };
+    const paidElement = (['water', 'air', 'fire', 'earth'] as const).find(
+      (element) => (targetCard.cost[element] ?? 0) > 0,
+    )!;
+    const before = prepared.players[0]!;
+    const duplicate = seasons.reduce(
+      prepared,
+      0,
+      {
+        type: 'summon',
+        cardUid: targetUid,
+        paidSources: [
+          { element: paidElement, source: 'reserve', slot: 0 },
+          { element: paidElement, source: 'reserve', slot: 0 },
+        ],
+      },
+      ctx,
+    );
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.code).toBe('choice_duplicate');
+    expect(prepared.players[0]!.energies).toEqual(before.energies);
+    expect(prepared.players[0]!.hand.some((card) => card.u === targetUid)).toBe(true);
+  });
 });
 
 describe('seasons summon effects', () => {
@@ -1310,7 +1971,7 @@ describe('seasons pending choice', () => {
   it('流水护符：支付后进入 element_alloc，按分配置 4 个能量到卡上', () => {
     const state = summonChoiceState('gain_energy', 9201);
     const res = seasons.reduce(state, 0, { type: 'summon', cardUid: 9201 }, ctx);
-    expect(res.ok).toBe(true);
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
     if (!res.ok) return;
     const pending = res.state.pendingChoice;
     expect(pending?.kind).toBe('element_alloc');
@@ -1749,7 +2410,9 @@ describe('seasons turn flow', () => {
           : player,
       ),
     };
-    const after = apply(state, first, { type: 'end-turn' });
+    const afterFirst = apply(state, first, { type: 'end-turn' });
+    expect(afterFirst.players[first]?.crystals).toBe(2);
+    const after = apply(afterFirst, afterFirst.turnOwner!, { type: 'end-turn' });
     expect(after.players[first]?.crystals).toBe(0);
     expect(after.log.some((entry) => entry.msg.includes('受诅咒灵魂'))).toBe(true);
   });
@@ -1794,7 +2457,15 @@ describe('seasons full game', () => {
           state = apply(state, seat, { type: 'resolve-choice', choice: { id: branch } });
         } else if (pending.kind === 'energy_swap') {
           const total = typeof pending.options.total === 'number' ? pending.options.total : 0;
-          state = apply(state, seat, { type: 'resolve-choice', choice: { water: total } });
+          const current = pending.options.current as Partial<Record<Element, number>>;
+          const incoming = pending.options.incoming as Partial<Record<Element, number>>;
+          const kept = { water: 0, air: 0, fire: 0, earth: 0 };
+          let remaining = total;
+          for (const element of ELEMENTS) {
+            kept[element] = Math.min(remaining, (current[element] ?? 0) + (incoming[element] ?? 0));
+            remaining -= kept[element];
+          }
+          state = apply(state, seat, { type: 'resolve-choice', choice: kept });
         } else if (pending.kind === 'card_list') {
           const uid = state.pendingCards?.[0]?.u;
           expect(uid).toBeDefined();
@@ -1872,6 +2543,12 @@ function activateReady(names: string[], uidBase = 7000): SeasonsState {
 }
 
 describe('seasons activate', () => {
+  function reserveSlotCard() {
+    return BASE_CARDS.find((card) =>
+      card.effect?.abilities?.some((ability) => ability.kind === 'reserve_slot'),
+    )!;
+  }
+
   it('奥尼斯的受诅咒灵魂：付 1 水把控制权转给下一位', () => {
     const base = activateReady(['奥尼斯的受诅咒灵魂']);
     const res = seasons.reduce(base, 0, { type: 'activate', cardUid: 7000 }, ctx);
@@ -1979,7 +2656,7 @@ describe('seasons activate', () => {
     expect(done.state.players[0]?.energies.air).toBe(4);
   });
 
-  it('伊什塔尔天平：弃 4 个相同能量换 12 水晶', () => {
+  it('伊什塔尔天平：弃 3 个相同能量换 9 水晶', () => {
     const state = activateReady(['伊什塔尔天平']);
     const res = seasons.reduce(state, 0, { type: 'activate', cardUid: 7000 }, ctx);
     expect(res.ok).toBe(true);
@@ -1993,11 +2670,11 @@ describe('seasons activate', () => {
     );
     expect(done.ok).toBe(true);
     if (!done.ok) return;
-    expect(done.state.players[0]?.crystals).toBe(22);
-    expect(done.state.players[0]?.energies.fire).toBe(1);
+    expect(done.state.players[0]?.crystals).toBe(19);
+    expect(done.state.players[0]?.energies.fire).toBe(2);
   });
 
-  it('能量不足时拒绝，且不改变状态', () => {
+  it('伊什塔尔天平：不足 3 个同类能量时请求阶段直接拒绝，不留下死待答', () => {
     const state = activateReady(['伊什塔尔天平']);
     const poor: SeasonsState = {
       ...state,
@@ -2008,17 +2685,39 @@ describe('seasons activate', () => {
       ),
     };
     const res = seasons.reduce(poor, 0, { type: 'activate', cardUid: 7000 }, ctx);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const done = seasons.reduce(
-      res.state,
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('effect_not_implemented');
+  });
+
+  it('伊什塔尔天平：储备不足但卡上同类能量足够时可以激活', () => {
+    const state = activateReady(['伊什塔尔天平']);
+    const withStored: SeasonsState = {
+      ...state,
+      players: state.players.map((player, seat) =>
+        seat === 0
+          ? {
+              ...player,
+              energies: { water: 1, air: 1, fire: 0, earth: 1 },
+              played: [
+                ...player.played,
+                {
+                  i: reserveSlotCard().id,
+                  u: 7099,
+                  stored: { water: 3 },
+                },
+              ],
+            }
+          : player,
+      ),
+    };
+    const res = seasons.reduce(
+      withStored,
       0,
-      { type: 'resolve-choice', choice: { element: 'water' } },
+      { type: 'activate', cardUid: 7000 },
       ctx,
     );
-    expect(done.ok).toBe(false);
-    if (done.ok) return;
-    expect(done.code).toBe('energy_low');
+    expect(res.ok, res.ok ? '' : `${res.code}: ${res.message}`).toBe(true);
   });
 
   it('非自己回合不能激活', () => {
@@ -2158,7 +2857,7 @@ describe('seasons activate (batch 2)', () => {
     expect(res.code).toBe('invalid_choice');
   });
 
-  it('生命药水：可一次选择多种元素，每种全部按 4 水晶转换', () => {
+  it('生命药水：必须将全部储备元素按每个 4 水晶转换', () => {
     const state = activateReady(['生命药水']);
     const res = seasons.reduce(state, 0, { type: 'activate', cardUid: 7000 }, ctx);
     expect(res.ok).toBe(true);
@@ -2174,16 +2873,16 @@ describe('seasons activate (batch 2)', () => {
     const done = seasons.reduce(
       res.state,
       0,
-      { type: 'resolve-choice', choice: ['water', 'air'] },
+      { type: 'resolve-choice', choice: ['water', 'air', 'fire', 'earth'] },
       ctx,
     );
     expect(done.ok).toBe(true);
     if (!done.ok) return;
-    expect(done.state.players[0]?.crystals).toBe(10 + 10 * 4);
+    expect(done.state.players[0]?.crystals).toBe(10 + 20 * 4);
     expect(done.state.players[0]?.energies.water).toBe(0);
     expect(done.state.players[0]?.energies.air).toBe(0);
-    expect(done.state.players[0]?.energies.fire).toBe(5);
-    expect(done.state.players[0]?.energies.earth).toBe(5);
+    expect(done.state.players[0]?.energies.fire).toBe(0);
+    expect(done.state.players[0]?.energies.earth).toBe(0);
   });
 
   it('生命药水：重复或没有能量的元素被拒绝', () => {
@@ -2206,9 +2905,7 @@ describe('seasons activate (batch 2)', () => {
       { type: 'resolve-choice', choice: [] },
       ctx,
     );
-    expect(empty.ok).toBe(true);
-    if (!empty.ok) return;
-    expect(empty.state.players[0]?.crystals).toBe(10);
+    expect(empty.ok).toBe(false);
   });
 
   it('光之树 A：弃 3 水晶得 1 能量', () => {
@@ -2259,16 +2956,48 @@ describe('seasons activate (batch 2)', () => {
 });
 
 describe('seasons end-of-turn and season effects', () => {
-  it('奇迹宝箱：回合结束储备 ≥4 得 3 水晶', () => {
-    const state = activateReady(['奇迹宝箱']);
-    const res = seasons.reduce(state, 0, { type: 'end-turn' }, ctx);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.state.players[0]?.crystals).toBe(13);
+  it('奇迹宝箱：所有玩家完成本轮后才结算，且只结算一次', () => {
+    const base = activateReady(['奇迹宝箱']);
+    const first = base.turnOwner!;
+    const second = base.dicePicked.find((seat) => seat !== first)!;
+    const afterFirst = seasons.reduce(base, first, { type: 'end-turn' }, ctx);
+    expect(afterFirst.ok).toBe(true);
+    if (!afterFirst.ok) return;
+    expect(afterFirst.state.players[first]?.crystals).toBe(10);
+
+    const afterSecond = seasons.reduce(afterFirst.state, second, { type: 'end-turn' }, ctx);
+    expect(afterSecond.ok).toBe(true);
+    if (!afterSecond.ok) return;
+    expect(afterSecond.state.players[first]?.crystals).toBe(13);
+    expect(
+      afterSecond.state.log.filter((entry) => entry.msg.includes('奇迹宝箱：水晶 +3')),
+    ).toHaveLength(1);
+  });
+
+  it('奇迹宝箱：首位结束后仍未满足 4 点储备，不提前结算', () => {
+    const base = activateReady(['奇迹宝箱']);
+    const first = base.turnOwner!;
+    const second = base.dicePicked.find((seat) => seat !== first)!;
+    const prepared: SeasonsState = {
+      ...base,
+      players: base.players.map((player) =>
+        player.seat === first
+          ? { ...player, energies: { water: 1, air: 1, fire: 1, earth: 0 } }
+          : player,
+      ),
+    };
+    const afterFirst = seasons.reduce(prepared, first, { type: 'end-turn' }, ctx);
+    expect(afterFirst.ok).toBe(true);
+    if (!afterFirst.ok) return;
+    expect(afterFirst.state.players[first]?.crystals).toBe(10);
+    const afterSecond = seasons.reduce(afterFirst.state, second, { type: 'end-turn' }, ctx);
+    expect(afterSecond.ok).toBe(true);
+    if (!afterSecond.ok) return;
+    expect(afterSecond.state.players[first]?.crystals).toBe(10);
   });
 
   it('深凝视的提图斯：对手给 1 水晶；对手无水晶时牺牲本卡', () => {
-    const state = activateReady(['深凝视的提图斯']);
+    const state = { ...activateReady(['深凝视的提图斯']), pickedThisSeason: [1] };
     const res = seasons.reduce(state, 0, { type: 'end-turn' }, ctx);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -2578,8 +3307,14 @@ describe('seasons mirror and dreams', () => {
     const started = seasons.reduce(state, 0, { type: 'activate', cardUid: 7000 }, ctx);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
-    expect(started.state.pendingChoice?.kind).toBe('card_pick');
-    expect(started.state.players[0]?.energies).toEqual({
+    expect(started.state.pendingChoice?.key).toBe('dream_payment');
+    expect(started.state.players[0]?.energies).toEqual(state.players[0]?.energies);
+    const paid = seasons.reduce(started.state, 0,
+      { type: 'resolve-choice', choice: state.players[0]!.energies }, ctx);
+    expect(paid.ok).toBe(true);
+    if (!paid.ok) return;
+    expect(paid.state.pendingChoice?.kind).toBe('card_pick');
+    expect(paid.state.players[0]?.energies).toEqual({
       water: 0,
       air: 0,
       fire: 0,
@@ -2588,7 +3323,7 @@ describe('seasons mirror and dreams', () => {
     expect(started.state.players[0]?.played).toHaveLength(0);
 
     const done = seasons.reduce(
-      started.state,
+      paid.state,
       0,
       { type: 'resolve-choice', choice: { uid: 7400 } },
       ctx,
@@ -2832,7 +3567,7 @@ describe('seasons multi-player summon choices', () => {
 });
 
 describe('seasons lewis', () => {
-  it('复制对手储备能量，可少于总量', () => {
+  it('选择对手后，完整复制其储备元素，不允许自选数量', () => {
     const lewis = BASE_CARDS.find((card) => card.nameZh === '灰脸路易斯')!;
     const base = summonReady();
     const state: SeasonsState = {
@@ -2851,21 +3586,21 @@ describe('seasons lewis', () => {
     const res = seasons.reduce(state, 0, { type: 'summon', cardUid: 9601 }, ctx);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.state.pendingChoice?.kind).toBe('element_alloc');
-    expect(res.state.pendingChoice?.options.allowPartial).toBe(true);
-    expect(res.state.pendingChoice?.options.amount).toBe(5);
+    expect(res.state.pendingChoice?.kind).toBe('branch');
+    expect(seasons.reduce(res.state, 0,
+      { type: 'resolve-choice', choice: { water: 2 } }, ctx).ok).toBe(false);
 
     const done = seasons.reduce(
       res.state,
       0,
-      { type: 'resolve-choice', choice: { water: 2 } },
+      { type: 'resolve-choice', choice: '1' },
       ctx,
     );
     expect(done.ok).toBe(true);
     if (!done.ok) return;
-    // 费用 air1/fire1，复制 water×2 → water 5、air 2。
-    expect(done.state.players[0]?.energies.water).toBe(5);
-    expect(done.state.players[0]?.energies.air).toBe(2);
+    // 费用 air1/fire1，完整复制 water3/air2。
+    expect(done.state.players[0]?.energies.water).toBe(6);
+    expect(done.state.players[0]?.energies.air).toBe(4);
     // 复制不转移：对手能量不变。
     expect(done.state.players[1]?.energies.water).toBe(3);
   });
@@ -2879,6 +3614,7 @@ describe('seasons beggars horn', () => {
     const other = base.dicePicked.find((seat) => seat !== owner)!;
     const state: SeasonsState = {
       ...base,
+      pickedThisSeason: [other],
       players: base.players.map((player) =>
         player.seat === owner
           ? {
@@ -2903,8 +3639,22 @@ describe('seasons beggars horn', () => {
     expect(done.ok).toBe(true);
     if (!done.ok) return;
     expect(done.state.players[owner]?.energies.water).toBe(1);
-    expect(done.state.pendingChoice).toBeNull();
-    expect(done.state.turnOwner).toBe(other);
+    let finished = done.state;
+    if (finished.pendingChoice?.key === 'die_draw') {
+      const discarded = finished.pendingCards![0]!;
+      const skip = seasons.reduce(
+        finished,
+        finished.pendingChoice.choosingSeat,
+        { type: 'end-turn' },
+        ctx,
+      );
+      expect(skip.ok).toBe(true);
+      if (!skip.ok) return;
+      expect(skip.state.discard.some((card) => card.u === discarded.u)).toBe(true);
+      finished = skip.state;
+    }
+    expect(finished.pendingChoice).toBeNull();
+    expect(finished.turnOwner).not.toBe(owner);
   });
 });
 
@@ -2937,7 +3687,8 @@ describe('seasons temporal boots', () => {
     if (!done.ok) return;
     expect(done.state.month).toBe(4);
     expect(done.state.pendingChoice).toBeNull();
-    expect(done.state.turnOwner).toBeNull();
+    expect(done.state.turnOwner).toBe(res.state.turnOwner);
+    expect(done.state.season?.dice).toEqual(res.state.season?.dice);
   });
 });
 
@@ -2967,7 +3718,7 @@ describe('seasons elemental amulet', () => {
     };
   }
 
-  it('付水：获得 2 个能量', () => {
+  it('付水：选择的 2 个能量储存到护符牌面', () => {
     const base = amuletState('water');
     const res = seasons.reduce(
       base,
@@ -2987,9 +3738,14 @@ describe('seasons elemental amulet', () => {
     );
     expect(done.ok).toBe(true);
     if (!done.ok) return;
-    expect(done.state.players[0]?.energies.air).toBe(4);
+    expect(done.state.players[0]?.energies.air).toBe(2);
+    expect(
+      done.state.players[0]?.played.find((card) => card.u === 9901)?.stored?.air,
+    ).toBe(2);
     expect(done.state.players[0]?.energies.water).toBe(1); // 付水 1
 
+    const view = seasons.view(done.state, 0, true);
+    expect(view.players[0]?.played.find((card) => card.u === 9901)?.stored?.air).toBe(2);
   });
 
   it('付风：召唤等级 +1（不弃手牌、不弹窗）', () => {
@@ -3053,7 +3809,9 @@ describe('seasons elemental amulet both', () => {
     expect(done.ok).toBe(true);
     if (!done.ok) return;
     expect(done.state.pendingChoice).toBeNull();
-    expect(done.state.players[0]?.energies.earth).toBe(4);
+    expect(
+      done.state.players[0]?.played.find((card) => card.u === 9911)?.stored?.earth,
+    ).toBe(2);
   });
 });
 
@@ -3172,6 +3930,289 @@ describe('seasons cost reduction', () => {
   });
 });
 
+describe('seasons extension card rules', () => {
+  const extensionCard = (id: number) => {
+    const def = [...EXT1_CARDS, ...EXT2_CARDS].find((card) => card.id === id);
+    if (!def) throw new Error(`missing extension card ${id}`);
+    return def;
+  };
+  const ready = (played: { i: number; u: number }[] = []) => {
+    const base = actionPhase('extension-rules');
+    return {
+      ...base,
+      players: base.players.map((player, seat) =>
+        seat === 0
+          ? {
+              ...player,
+              gauge: 10,
+              maxEnergy: 20,
+              crystals: 10,
+              energies: { water: 5, air: 5, fire: 5, earth: 5 },
+              played,
+              activatedThisTurn: [],
+              jewels: { water: 0, air: 0, fire: 0, earth: 0 },
+            }
+          : player,
+      ),
+    };
+  };
+
+  it('龙魂支付 1 水晶并重置一张本回合已用的其他牌', () => {
+    const target = ready([{ i: 5, u: 7001 }]);
+    const activatedTarget = {
+      ...target,
+      players: target.players.map((player) =>
+        player.seat === 0
+          ? { ...player, activatedThisTurn: ['7001'] }
+          : player,
+      ),
+    };
+    const withDragon = {
+      ...activatedTarget,
+      players: activatedTarget.players.map((player) =>
+        player.seat === 0
+          ? { ...player, played: [...player.played, { i: 71, u: 7002 }] }
+          : player,
+      ),
+    };
+    const started = apply(withDragon, 0, { type: 'activate', cardUid: 7002 });
+    expect(started.players[0]!.crystals).toBe(withDragon.players[0]!.crystals - 1);
+    expect(started.pendingChoice?.key).toBe('dragonsoul');
+    const done = apply(started, 0, {
+      type: 'resolve-choice',
+      choice: { uid: 7001 },
+    });
+    expect(done.players[0]!.activatedThisTurn.some((key) => key.startsWith('7001'))).toBe(false);
+    expect(done.players[0]!.activatedThisTurn).toContain('7002');
+  });
+
+  it('复生王座在进场时弃手牌、抽一张并把徽章使用数退回', () => {
+    const state = ready([]);
+    const card = { i: 60, u: 7010 };
+    const discardedCard = { i: 1, u: 7011 };
+    const withCard = {
+      ...state,
+      players: state.players.map((player) =>
+        player.seat === 0
+          ? { ...player, hand: [...player.hand, card, discardedCard], badgesUsed: 2 }
+          : player,
+      ),
+    };
+    const started = apply(withCard, 0, { type: 'summon', cardUid: 7010 });
+    expect(started.pendingChoice?.key).toBe('throne_of_renewal');
+    const handBefore = started.players[0]!.hand.length;
+    const done = apply(started, 0, {
+      type: 'resolve-choice',
+      choice: { uid: discardedCard.u },
+    });
+    expect(done.players[0]!.badgesUsed).toBe(1);
+    expect(done.players[0]!.hand.length).toBe(handBefore);
+    expect(done.discard.some((item) => item.u === discardedCard.u)).toBe(true);
+    expect(done.discard.some((item) => item.u === card.u)).toBe(false);
+  });
+  it('远古珠宝消耗 3 个同色能量、在牌上存 1 个并终局按数量计分', () => {
+    const state = ready([{ i: 62, u: 7020 }]);
+    const started = apply(state, 0, { type: 'activate', cardUid: 7020 });
+    expect(started.pendingChoice?.key).toBe('jewel_of_the_ancients');
+    const done = apply(started, 0, { type: 'resolve-choice', choice: { element: 'water' } });
+    expect(done.players[0]!.energies.water).toBe(2);
+    expect(done.players[0]!.cardMarks?.[7020]?.jewels).toBe(1);
+    expect(done.players[0]!.cardMarks?.[7020]?.storedWater).toBe(1);
+    const scored = {
+      ...done,
+      month: 35,
+      pickedThisSeason: [1],
+      dicePicked: [0, 1],
+    };
+    const ended = applyEnd(scored);
+    const score = ended.result?.players.find((item) => item.seat === 0);
+    expect(score?.effectPoints).toBe(-10);
+  });
+
+  it('伊欧的晶化魔盘让水晶骰面允许晶化，并在回合结束奖励 2 水晶', () => {
+    const base = actionPhase('transmuter-round');
+    const withCard = {
+      ...base,
+      players: base.players.map((player, seat) =>
+        seat === 0
+          ? {
+              ...player,
+              played: [{ i: 59, u: 7031 }],
+              canTransmute: false,
+              energies: { water: 2, air: 0, fire: 0, earth: 0 },
+            }
+          : player,
+      ),
+      season: base.season
+        ? {
+            ...base.season,
+            dice: base.season.dice.map((die) =>
+              die.pickedBy === 0
+                ? { ...die, rewards: { ...die.rewards, crystals: 1 } }
+                : die,
+            ),
+          }
+        : null,
+    };
+    const transmuted = apply(withCard, 0, { type: 'transmute', element: 'water' });
+    expect(transmuted.players[0]!.energies.water).toBe(1);
+    expect(transmuted.players[0]!.transmutedThisTurn).toBe(true);
+    const firstEnded = apply(transmuted, 0, { type: 'end-turn' });
+    expect(firstEnded.players[0]!.transmutedThisTurn).toBe(true);
+    const ended = apply(firstEnded, firstEnded.turnOwner!, { type: 'end-turn' });
+    expect(ended.players[0]!.transmutedThisTurn).toBe(false);
+    expect(ended.log.some((entry) => entry.msg.includes('晶化魔盘'))).toBe(true);
+  });
+
+  it('伊欧的复制仪支付 1 水并生成独立复制牌，牌面 7 分', () => {
+    const state = ready([{ i: 80, u: 7040 }]);
+    const before = state.players[0]!;
+    const started = apply(state, 0, { type: 'activate', cardUid: 7040 });
+    const me = started.players[0]!;
+    expect(me.energies.water).toBe(before.energies.water - 1);
+    expect(me.played.some((card) => card.i === 222 && card.generated)).toBe(true);
+    expect(started.replicaDeck).toBe(9);
+    expect(me.replicaSupply).toBe(9);
+    expect(started.players[0]!.activatedThisTurn).toContain('7040');
+  });
+
+  it('复制仪在无召唤槽或无复制牌时拒绝且不扣水', () => {
+    const full = ready([{ i: 80, u: 7041 }]);
+    const fullState = {
+      ...full,
+      players: full.players.map((player) =>
+        player.seat === 0 ? { ...player, gauge: player.played.length } : player,
+      ),
+    } satisfies SeasonsState;
+    const blocked = seasons.reduce(fullState, 0, { type: 'activate', cardUid: 7041 }, ctx);
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.code).toBe('gauge_low');
+    expect(fullState.players[0]!.energies.water).toBe(5);
+
+    const exhausted: SeasonsState = { ...full, replicaDeck: 0 };
+    const empty = seasons.reduce(exhausted, 0, { type: 'activate', cardUid: 7041 }, ctx);
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.code).toBe('no_replica');
+  });
+
+  it('伊欧的爪牙阻止获得水晶，但仍可弃风传递并重置', () => {
+    const base = ready([{ i: 88, u: 7050 }]);
+    const state = {
+      ...base,
+      players: base.players.map((player) =>
+        player.seat === 0 ? { ...player, crystals: 20 } : player,
+      ),
+    } satisfies SeasonsState;
+    const started = apply(state, 0, { type: 'activate', cardUid: 7050 });
+    expect(started.pendingChoice?.kind).toBe('branch');
+    const passed = apply(started, 0, { type: 'resolve-choice', choice: 'transfer' });
+    expect(passed.players[0]!.played.some((card) => card.u === 7050)).toBe(false);
+    expect(passed.players[1]!.played.some((card) => card.u === 7050)).toBe(true);
+    expect(passed.players[0]!.energies.air).toBe(4);
+    expect(passed.players[1]!.activatedThisTurn).not.toContain('7050');
+    expect(passed.players[0]!.crystals).toBe(20);
+  });
+
+  it('拉格菲尔德的仆从只让至少10水晶的玩家升等级，并各自选择摸牌', () => {
+    const state = ready([]);
+    const cast = {
+      ...state,
+      players: state.players.map((player) => ({
+        ...player,
+        hand:
+          player.seat === 0
+            ? [{ i: 86, u: 7060 }, ...player.hand]
+            : player.hand,
+        crystals: player.seat === 0 ? 9 : 10,
+      })),
+    } satisfies SeasonsState;
+    const started = apply(cast, 0, { type: 'summon', cardUid: 7060 });
+    expect(started.players[0]!.played.some((card) => card.i === 86)).toBe(true);
+    expect(started.players[0]!.gauge).toBe(cast.players[0]!.gauge);
+    expect(started.players[1]!.gauge).toBe(cast.players[1]!.gauge + 1);
+    expect(started.pendingChoice?.key).toBe('servant_of_ragfield');
+    const first = apply(started, 1, { type: 'resolve-choice', choice: 'keep' });
+    expect(first.players[1]!.hand.length).toBe(started.players[1]!.hand.length + 1);
+    expect(first.pendingChoice).toBeNull();
+  });
+
+  it('席拉之盾可代替龙之头骨所需的牺牲，并结算 10 水晶', () => {
+    const base = ready([{ i: 37, u: 7080 }]);
+    const state = {
+      ...base,
+      players: base.players.map((player) =>
+        player.seat === 0
+          ? {
+              ...player,
+              played: [
+                ...player.played,
+                { i: 72, u: 7081 },
+                { i: 63, u: 7082 },
+              ],
+              energies: { water: 5, air: 5, fire: 5, earth: 5 },
+              maxEnergy: 20,
+              crystals: 10,
+            }
+          : player,
+      ),
+    } satisfies SeasonsState;
+    const started = apply(state, 0, { type: 'activate', cardUid: 7080 });
+    expect(started.pendingChoice?.kind).toBe('sacrifice_cards');
+    const afterShield = apply(started, 0, {
+      type: 'resolve-choice',
+      choice: [7082],
+    });
+    expect(afterShield.players[0]!.crystals).toBe(20);
+    expect(afterShield.discard.some((card) => card.u === 7082)).toBe(true);
+    expect(afterShield.players[0]!.played.some((card) => card.u === 7082)).toBe(false);
+    expect(afterShield.pendingChoice?.options.remaining).toBe(2);
+  });
+
+  it('诈欺狼把交牌目标限制为场上魔法牌最少的对手，并允许选择手牌', () => {
+    const state = ready([]);
+    const staged = {
+      ...state,
+      players: state.players.map((player) =>
+        player.seat === 0
+          ? { ...player, hand: [{ i: 90, u: 7070 }, { i: 8, u: 7071 }] }
+          : { ...player, played: [] },
+      ),
+    } satisfies SeasonsState;
+    const started = apply(staged, 0, { type: 'summon', cardUid: 7070 });
+    expect(started.players[0]!.played.some((card) => card.i === 90)).toBe(true);
+    expect(started.pendingChoice?.key).toBe('crafty_nightshade');
+    expect(started.pendingChoice?.options.stage).toBe('target');
+    const targetSeat = staged.players
+      .map((player) => player.seat)
+      .find((seat) => seat !== 0)!;
+    const target = apply(started, 0, {
+      type: 'resolve-choice',
+      choice: String(targetSeat),
+    });
+    expect(target.pendingChoice?.options.stage).toBe('card');
+    const handCard = target.players[0]!.hand[0]!;
+    const opponentHand = target.players[1]!.hand.length;
+    const done = apply(target, 0, {
+      type: 'resolve-choice',
+      choice: { uid: handCard.u },
+    });
+    expect(done.players[0]!.hand.some((card) => card.u === handCard.u)).toBe(false);
+    expect(done.players[1]!.hand.some((card) => card.u === handCard.u)).toBe(true);
+    expect(done.players[1]!.hand.length).toBe(opponentHand + 1);
+  });
+});
+
+function applyEnd(state: SeasonsState): SeasonsState {
+  const advanced = seasons.reduce(
+    { ...state, month: 35, turnOwner: 0, phase: 'play' },
+    0,
+    { type: 'end-turn' },
+    ctx,
+  );
+  if (!advanced.ok) throw new Error(advanced.message);
+  return advanced.state;
+}
+
 describe('seasons badges', () => {
   it('徽章 3：召唤等级 +1，并消耗一次使用次数', () => {
     const state = summonReady();
@@ -3182,26 +4223,70 @@ describe('seasons badges', () => {
     expect(after.log.at(-1)?.t).toBe('badge');
   });
 
-  it('徽章 2：1 个能量换当前季节转换值 +1 的水晶', () => {
-    const state = summonReady();
-    const before = state.players[0]!;
-    const after = apply(state, 0, {
-      type: 'use-badge',
-      badgeType: 2,
-      element: 'water',
-    });
-    const me = after.players[0]!;
-    expect(me.energies.water).toBe(before.energies.water - 1);
-    expect(me.crystals - before.crystals).toBeGreaterThan(1);
-    expect(me.badgesUsed).toBe(1);
+  it('徽章 2：无元素也可取得晶化权，两次叠加后每枚额外 +2', () => {
+    const state = actionPhase('badge-2');
+    const noEnergy: SeasonsState = {
+      ...state,
+      players: state.players.map((player) =>
+        player.seat === 0
+          ? {
+              ...player,
+              canTransmute: false,
+              energies: { water: 0, air: 0, fire: 0, earth: 0 },
+            }
+          : player,
+      ),
+    };
+    const badge = apply(noEnergy, 0, { type: 'use-badge', badgeType: 2 });
+    expect(badge.players[0]!.energies).toEqual({ water: 0, air: 0, fire: 0, earth: 0 });
+    expect(badge.players[0]!.badgesUsed).toBe(1);
+    expect(badge.players[0]!.transmuteBonus).toBe(1);
+    const twice = apply(badge, 0, { type: 'use-badge', badgeType: 2 });
+    expect(twice.players[0]!.transmuteBonus).toBe(2);
+    expect(twice.players[0]!.badgesUsed).toBe(2);
+    const ready: SeasonsState = {
+      ...twice,
+      players: twice.players.map((player) =>
+        player.seat === 0
+          ? {
+              ...player,
+              canTransmute: true,
+              energies: { ...player.energies, water: 2 },
+            }
+          : player,
+      ),
+    };
+    const transmuted = apply(ready, 0, { type: 'transmute', element: 'water' });
+    expect(transmuted.players[0]!.energies.water).toBe(1);
+    const waterValue = seasons
+      .view(ready, 0, true)
+      .transmuteValues.find(({ element }) => element === 'water')!.value;
+    expect(transmuted.players[0]!.crystals - ready.players[0]!.crystals).toBe(
+      waterValue + 2,
+    );
+    expect(transmuted.players[0]!.transmuteBonus).toBe(2);
+    const again = apply(transmuted, 0, { type: 'transmute', element: 'water' });
+    expect(again.players[0]!.crystals - transmuted.players[0]!.crystals).toBe(waterValue + 2);
+    const ended = apply(again, 0, { type: 'end-turn' });
+    expect(ended.players[0]!.transmuteBonus).toBe(0);
   });
 
-  it('徽章 2 的季节按 month 推导（seasonIdx 过期也不影响）', () => {
+  it('徽章 2 的额外值按 month 推导（seasonIdx 过期也不影响）', () => {
     const base = summonReady();
-    // 春季（month=4）：air 的转换值是 2，徽章 2 应得 3 水晶。
-    const stale: SeasonsState = { ...base, month: 4, seasonIdx: 0 };
-    const before = stale.players[0]!.crystals;
-    const after = apply(stale, 0, { type: 'use-badge', badgeType: 2, element: 'air' });
+    // 春季（month=4）：air 的转换值是 2，徽章额外 +1 应得 3 水晶。
+    const stale: SeasonsState = {
+      ...base,
+      month: 4,
+      seasonIdx: 0,
+      players: base.players.map((player) =>
+        player.seat === 0
+          ? { ...player, canTransmute: true, energies: { ...player.energies, air: 1 } }
+          : player,
+      ),
+    };
+    const withBadge = apply(stale, 0, { type: 'use-badge', badgeType: 2 });
+    const before = withBadge.players[0]!.crystals;
+    const after = apply(withBadge, 0, { type: 'transmute', element: 'air' });
     expect(after.players[0]!.crystals - before).toBe(3);
   });
 
@@ -3262,7 +4347,7 @@ describe('seasons badges', () => {
     if (!res2.ok) expect(res2.code).toBe('not_your_turn');
   });
 
-  it('徽章 4 升级后，抽卡骰变成摸 2 选 1，选完才继续', () => {
+  it('徽章 4 升级本人选中的抽卡骰，摸 2 选 1，并在行动轮结束清除', () => {
     const base = toPlay(draftAll(setup('badge-seed')));
     const season = base.season!;
     const state: SeasonsState = {
@@ -3273,39 +4358,109 @@ describe('seasons badges', () => {
           index === 0 ? { ...die, rewards: { ...die.rewards, card: true } } : die,
         ),
       },
-      players: base.players.map((player, seat) =>
-        seat === 0 ? { ...player, badgeDrawUpgrade: true } : player,
-      ),
+      players: base.players,
     };
     const idx = 0;
     const pickedFirst = apply(state, 0, { type: 'draft-dice', dieIndex: idx });
-    const drawn = apply(pickedFirst, 1, { type: 'draft-dice', dieIndex: 1 });
-    const me = drawn.players[0]!;
-    expect(me.badgeDraw?.length).toBe(2);
+    const pickedBoth = apply(pickedFirst, 1, { type: 'draft-dice', dieIndex: 1 });
+    const upgraded = apply(pickedBoth, 0, {
+      type: 'use-badge',
+      badgeType: 4,
+      dieId: pickedBoth.season!.dice[idx]!.id,
+    });
+    expect(upgraded.players[0]!.badgeDrawDieId).toBe(pickedBoth.season!.dice[idx]!.id);
 
-    const blocked = seasons.reduce(drawn, 0, { type: 'end-turn' }, ctx);
-    expect(blocked.ok).toBe(false);
-    if (!blocked.ok) expect(blocked.code).toBe('pending_badge');
-
-    const keepUid = me.badgeDraw![0]!.u;
-    const kept = apply(drawn, 0, { type: 'badge-keep', cardUid: keepUid });
-    const after = kept.players[0]!;
-    expect(after.badgeDraw).toBeNull();
-    expect(after.hand.some((card) => card.u === keepUid)).toBe(true);
+    let ready = upgraded;
+    if (ready.pendingChoice?.key === 'die_draw') {
+      ready = apply(ready, 0, {
+        type: 'resolve-choice',
+        choice: [ready.pendingCards![0]!.u],
+      });
+    }
+    expect(ready.players[0]!.badgeDrawDieId).toBe(pickedBoth.season!.dice[idx]!.id);
+    const ended = apply(ready, 0, { type: 'end-turn' });
+    expect(ended.players[0]!.badgeDrawDieId).toBeNull();
   });
 
-  it('badgeDraw 仅本人可见', () => {
-    const base = summonReady();
+  it('徽章 4 拒绝别人的骰子和无抽牌图标，失败不消耗徽章', () => {
+    const base = actionPhase('badge-reject');
+    const own = base.season!.dice.find((die) => die.pickedBy === 0)!;
+    const rival = base.season!.dice.find((die) => die.pickedBy === 1)!;
     const state: SeasonsState = {
       ...base,
-      players: base.players.map((player, seat) =>
-        seat === 0
-          ? { ...player, badgeDraw: [{ i: 1, u: 777 }] }
-          : player,
-      ),
+      season: {
+        ...base.season!,
+        dice: base.season!.dice.map((die) => ({
+          ...die,
+          rewards: { ...die.rewards, card: false },
+        })),
+      },
     };
-    expect(seasons.view(state, 0, true).players[0]?.badgeDraw?.length).toBe(1);
-    expect(seasons.view(state, 1, true).players[0]?.badgeDraw).toBeNull();
+    const rivalRes = seasons.reduce(
+      state,
+      0,
+      { type: 'use-badge', badgeType: 4, dieId: rival.id },
+      ctx,
+    );
+    expect(rivalRes.ok).toBe(false);
+    if (!rivalRes.ok) expect(rivalRes.code).toBe('invalid_die');
+    const noDraw = seasons.reduce(
+      state,
+      0,
+      { type: 'use-badge', badgeType: 4, dieId: own.id },
+      ctx,
+    );
+    expect(noDraw.ok).toBe(false);
+    if (!noDraw.ok) expect(noDraw.code).toBe('die_has_no_draw');
+
+    const drawState: SeasonsState = {
+      ...state,
+      deck: state.deck.slice(0, -1),
+      pendingChoice: { kind: 'card_list', key: 'die_draw', choosingSeat: 0, options: { keep: 1 } },
+      pendingCards: state.deck.slice(-1),
+      season: {
+        ...state.season!,
+        dice: state.season!.dice.map((die) =>
+          die.id === own.id
+            ? { ...die, rewards: { ...die.rewards, card: true } }
+            : die,
+        ),
+      },
+    };
+    const used = apply(drawState, 0, {
+      type: 'use-badge',
+      badgeType: 4,
+      dieId: own.id,
+    });
+    const replay = seasons.reduce(
+      used,
+      0,
+      { type: 'use-badge', badgeType: 4, dieId: own.id },
+      ctx,
+    );
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.code).toBe('badge_draw_used');
+  });
+
+  it('骰面抽牌候选只给选择者，未保留不会直接入手', () => {
+    const base = summonReady();
+    const candidate = base.deck.at(-1)!;
+    const state: SeasonsState = {
+      ...base,
+      pendingChoice: {
+        kind: 'card_list',
+        key: 'die_draw',
+        choosingSeat: 0,
+        options: { amount: 1, keep: 1, label: '保留此牌', source: 'die' },
+        cards: [candidate],
+      },
+      pendingCards: [candidate],
+    };
+    const mine = seasons.view(state, 0, true);
+    const rival = seasons.view(state, 1, true);
+    expect((mine.pendingChoice?.options as { cards?: unknown }).cards).toEqual([candidate]);
+    expect((rival.pendingChoice?.options as { cards?: unknown }).cards).toBeUndefined();
+    expect(rival.players[0]?.hand).toBeNull();
   });
 });
 

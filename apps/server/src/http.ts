@@ -1,6 +1,14 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { setSessionCookie, startGuestSession, userFromCookieHeader, userFromRequest, SESSION_COOKIE } from './auth.js';
+import {
+  cookieFingerprint,
+  parseCookieValues,
+  setSessionCookie,
+  startGuestSession,
+  userFromCookieHeader,
+  userFromRequest,
+  SESSION_COOKIE,
+} from './auth.js';
 import { listGames } from './games/registry.js';
 import * as matches from './matches.js';
 import { AppError } from './errors.js';
@@ -73,8 +81,23 @@ export async function registerHttp(app: FastifyInstance): Promise<void> {
 
   app.get('/api/me', async (request, reply) => {
     const user = userFromRequest(request, reply);
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    reply.header('Pragma', 'no-cache');
     return { user };
   });
+
+  const debugSession = async (request: FastifyRequest) => {
+    const cookies = parseCookieValues(request.headers.cookie, SESSION_COOKIE);
+    const user = userFromCookieHeader(request.headers.cookie);
+    return {
+      user: user ? { id: user.id.slice(0, 6) } : null,
+      cookieCount: cookies.length,
+      cookieFingerprints: cookies.map(cookieFingerprint),
+      headerFingerprint: cookieFingerprint(request.headers.cookie),
+    };
+  };
+  app.get('/api/debug/session', debugSession);
+  app.post('/api/debug/session', debugSession);
 
   app.post('/api/me/name', async (request, reply) => {
     const user = userFromRequest(request, reply);

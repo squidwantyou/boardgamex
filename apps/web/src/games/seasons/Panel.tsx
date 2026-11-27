@@ -1,27 +1,34 @@
-import { useEffect, useRef, useState } from 'react';
-import { ChoiceModal } from './ChoiceModal';
+import {
+  useEffect,
+  useCallback,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { CARD_BY_ID } from '@bgx/protocol/games/seasons-cards-all';
 import {
   ELEMENTS,
   type Element,
-  type SeasonsCardCost,
+  type SeasonsAction,
   type SeasonsCardView,
+  type SeasonsDieView,
+  type SeasonsElementSource,
   type SeasonsGameView,
   type SeasonsPlayerView,
 } from '@bgx/protocol/games/seasons';
-import type { SeasonsAction } from '@bgx/protocol/games/seasons';
 import type { GamePanelProps } from '../types';
-import { dieArt } from './art';
-import { ElementChoice, ElementCost, ElementPips, ElementRow } from './energy/ElementStack';
-import { CardMini } from './cards/CardMini';
-import { CardPile } from './cards/CardPile';
-import { CardDetail } from './cards/CardDetail';
-import { Glossary } from './Glossary';
-import { Onboarding, markOnboardingDone, onboardingDone } from './Onboarding';
-import { ResultScreen } from './ResultScreen';
+import { cardArt, cardFullArt, dieArt, elementArt, starArt, tableArt } from './art';
+import { CARD_COPY } from './card-copy';
+import { ChoiceModal } from './ChoiceModal';
+import { TableCard, CardInspection } from './cards/TableCard';
+import { InspectionDetail } from './cards/InspectionDetail';
+import { ReserveBank } from './ReserveBank';
 import { LogPanel } from './LogPanel';
-import { CardTile } from './cards/CardTile';
+import { ResultScreen } from './ResultScreen';
+import { Glossary } from './Glossary';
+import { markerArt } from './art';
 import './styles.css';
+import './table.css';
 
 const ELEMENT_NAME: Record<Element, string> = {
   water: '水',
@@ -30,1297 +37,1053 @@ const ELEMENT_NAME: Record<Element, string> = {
   earth: '土',
 };
 
-const SEASON_NAME: Record<string, string> = { w: '冬季', s: '春季', u: '夏季', f: '秋季' };
-
-/** 骰面奖励的一句话说明（用于骰子 title / 无障碍提示）。 */
-function describeRewards(rewards: SeasonsGameView['dice'][number]['rewards']): string {
-  const parts: string[] = [];
-  if (rewards.summon) parts.push('召唤等级+1');
-  if (rewards.transmute) parts.push('可晶化');
-  if (rewards.card) parts.push('抽 1 张');
-  if (rewards.crystals) parts.push(`水晶+${rewards.crystals}`);
-  for (const element of ELEMENTS) {
-    if (rewards[element]) parts.push(`${ELEMENT_NAME[element]}+${rewards[element]}`);
-  }
-  return parts.join('、') || '无奖励';
-}
-
-type HandSort = 'default' | 'cost' | 'type';
-
-/** 手牌排序（F10.2）：按费用（元素总数→水晶）或按类型，稳定保持引擎给的原始顺序。 */
-function sortHand(cards: SeasonsPlayerView['hand'], mode: HandSort) {
-  if (!cards || mode === 'default') return cards ?? [];
-  const energyCost = (id: number) => {
-    const cost = CARD_BY_ID.get(id)?.cost;
-    if (!cost) return 0;
-    return cost.water + cost.air + cost.fire + cost.earth;
-  };
-  const crystalCost = (id: number) => CARD_BY_ID.get(id)?.cost?.crystal ?? 0;
-  const typeKey = (id: number) => CARD_BY_ID.get(id)?.type ?? '';
-  return [...cards].sort((a, b) => {
-    if (mode === 'cost') {
-      return energyCost(a.i) - energyCost(b.i) || crystalCost(a.i) - crystalCost(b.i) || a.u - b.u;
-    }
-    return typeKey(a.i).localeCompare(typeKey(b.i)) || energyCost(a.i) - energyCost(b.i) || a.u - b.u;
-  });
-}
-
-/** 与引擎 rules/const.ts 的 MAX_BADGES 一致 */
-const SEAT_COLORS = ['#e8c26a', '#5fb0e6', '#7fd6a8', '#e08a6a'] as const;
-
 const MAX_BADGES = 3;
+const BASE_ENERGY_SLOTS = 7;
 
-const PHASE_NAME: Record<string, string> = {
-  draft: '轮抽',
-  organize: '组牌',
-  play: '行动',
-  ended: '已结束',
+function sourceCount(
+  player: SeasonsPlayerView,
+  element: Element,
+  selected: readonly SeasonsElementSource[],
+  cardUid: number,
+): number {
+  const used = selected.filter(
+    (source) => source.element === element && (source.cardUid ?? 0) === cardUid,
+  ).length;
+  if (cardUid === 0) return player.energies[element] - used;
+  const card = player.played.find((item) => item.u === cardUid);
+  return (card?.stored?.[element] ?? 0) - used;
+}
+
+function sourceKey(source: SeasonsElementSource): string {
+  return `${source.source}:${source.cardUid ?? 0}:${source.slot ?? 0}:${source.element}`;
+}
+
+/** 400×400 季节轮素材上的月份轨道中心（从 1 月顺时针）。 */
+const MONTH_PLACEMENT = [
+  [246, 28], [326, 74], [372, 154], [372, 246],
+  [326, 326], [246, 372], [154, 372], [74, 326],
+  [28, 246], [28, 154], [74, 74], [154, 28],
+] as const;
+
+/** 三个印刷年份圆的外轮廓中心；只描边，不覆盖数字。 */
+const YEAR_PLACEMENT = [
+  { x: 166, y: 200, size: 30 },
+  { x: 199, y: 200, size: 30 },
+  { x: 231, y: 200, size: 30 },
+] as const;
+
+const BADGE_LABEL: Record<1 | 2 | 3 | 4, string> = {
+  1: '换能量',
+  2: '能量换水晶',
+  3: '召唤等级 +1',
+  4: '抽卡升级',
+};
+
+type BadgeType = 1 | 2 | 3 | 4;
+type DrawDecision = {
+  cards: SeasonsCardView[];
+  keep: number;
+  titled: string;
 };
 
 function cardName(id: number): string {
-  return CARD_BY_ID.get(id)?.nameZh ?? `卡牌 #${id}`;
+  return CARD_COPY[id]?.nameZh ?? CARD_BY_ID.get(id)?.nameZh ?? `卡牌 #${id}`;
 }
 
-function cardCost(id: number): string {
-  const def = CARD_BY_ID.get(id);
-  if (!def) return '';
-  if (def.costFlexible) {
-    const { min, max } = def.costFlexible;
-    return `灵活 ${min}–${max} 种`;
-  }
-  const cost = def.cost;
-  if (!cost) return '';
-  return ELEMENTS.filter((element) => cost[element] > 0)
-    .map((element) => `${ELEMENT_NAME[element]}${cost[element]}`)
-    .join(' ');
-}
-
-
-/** 储备 = 储备区 + 非封印卡上的能量（与引擎一致，供前端可支付性判断）。 */
-function reserveOf(player: SeasonsPlayerView): Record<Element, number> {
-  const total: Record<Element, number> = { water: 0, air: 0, fire: 0, earth: 0 };
-  for (const element of ELEMENTS) total[element] = player.energies[element];
-  for (const card of player.played) {
-    const def = CARD_BY_ID.get(card.i);
-    const sealed = def?.effect?.abilities?.some((ability) => ability.kind === 'sealed_energy');
-    if (sealed) continue;
-    const stored = (card as { stored?: Partial<Record<Element, number>> }).stored;
-    if (!stored) continue;
-    for (const element of ELEMENTS) total[element] += stored[element] ?? 0;
-  }
-  return total;
-}
-
-/** 返回无法召唤的原因（null = 可以支付）。 */
-function summonBlockReason(
-  player: SeasonsPlayerView,
-  cardId: number,
-  playerCount: number,
-): string | null {
-  const def = CARD_BY_ID.get(cardId);
-  if (!def) return '未知卡牌';
-  if (player.gauge <= player.played.length) return '召唤位已满';
-  const reserve = reserveOf(player);
-  if (def.costFlexible) {
-    const { min, max, maxPerType } = def.costFlexible;
-    let kinds = 0;
-    let amount = 0;
-    for (const element of ELEMENTS) {
-      const take = Math.min(reserve[element], maxPerType ?? 1);
-      if (take > 0) {
-        kinds += 1;
-        amount += take;
-      }
-    }
-    if (kinds < min || amount < min) return '能量不足';
-    return null;
-  }
-  const byPlayers = def.costByPlayers as
-    | Partial<Record<string, Partial<typeof def.cost>>>
-    | undefined;
-  const cost = { ...def.cost, ...(byPlayers?.[String(playerCount)] ?? {}) };
-  let missing = false;
-  for (const element of ELEMENTS) {
-    if (reserve[element] < (cost[element] ?? 0)) missing = true;
-  }
-  if ((cost.crystal ?? 0) > player.crystals) return '水晶不足';
-  return missing ? '能量不足' : null;
+function cardDescription(id: number): string {
+  return CARD_COPY[id]?.desc ?? CARD_BY_ID.get(id)?.desc ?? '这张牌目前没有效果说明。';
 }
 
 function isFlexCard(id: number): boolean {
   return Boolean(CARD_BY_ID.get(id)?.costFlexible);
 }
 
-/** 灵活费用支付：支付 min–max 种不同元素（每种最多 maxPerType 个）。 */
-function PaymentModal({
-  cardId,
-  player,
-  onCancel,
-  onConfirm,
-}: {
-  cardId: number;
-  player: SeasonsPlayerView;
-  onCancel: () => void;
-  onConfirm: (paid: Element[]) => void;
-}) {
-  const def = CARD_BY_ID.get(cardId);
-  const flex = def?.costFlexible;
-  const maxPer = flex?.maxPerType ?? 1;
-  const min = flex?.min ?? 1;
-  const max = flex?.max ?? 4;
-  const [paid, setPaid] = useState<Element[]>([]);
-  if (!flex) return null;
-  const countOf = (element: Element) => paid.filter((item) => item === element).length;
-  const toggle = (element: Element) => {
-    const current = countOf(element);
-    if (current >= maxPer) {
-      setPaid((list) => list.filter((item) => item !== element));
-      return;
+function isActivatable(id: number): boolean {
+  const effect = CARD_BY_ID.get(id)?.effect;
+  return Boolean(effect && (effect.trigger === 'activation' || effect.triggers.includes('activation')));
+}
+
+function abilityOptions(id: number): { key: string; label: string }[] {
+  return (CARD_BY_ID.get(id)?.effect?.abilities ?? [])
+    .filter((ability) => ability.kind === 'activation_ability' && ability.key)
+    .map((ability) => ({ key: ability.key!, label: ability.label ?? ability.key! }));
+}
+
+function playerName(view: GamePanelProps<SeasonsGameView>['view'], seat: number): string {
+  return view.players.find((player) => player.seat === seat)?.name ?? `玩家 ${seat + 1}`;
+}
+
+/**
+ * 基础槽固定七格。实际储备超过七项时继续追加可见槽；
+ * 槽内容只表示已获得的元素，不显示数量或上限。
+ */
+function energySlots(player: SeasonsPlayerView): (Element | null)[] {
+  const elements: Element[] = [];
+  for (const element of ELEMENTS) {
+    for (let index = 0; index < player.energies[element]; index += 1) elements.push(element);
+  }
+  return Array.from(
+    { length: Math.max(BASE_ENERGY_SLOTS, player.maxEnergy, elements.length) },
+    (_, index) => elements[index] ?? null,
+  );
+}
+
+function reserveSources(
+  player: SeasonsPlayerView,
+  selected: readonly SeasonsElementSource[],
+): SeasonsElementSource[] {
+  const result: SeasonsElementSource[] = [];
+  for (const element of ELEMENTS) {
+    const used = selected.filter(
+      (source) => source.source === 'reserve' && source.element === element,
+    ).length;
+    for (let index = used; index < player.energies[element]; index += 1) {
+      result.push({ element, source: 'reserve', slot: index });
     }
-    if (paid.length >= max) return;
-    setPaid((list) => [...list, element]);
-  };
-  const valid = paid.length >= min && paid.length <= max;
-  return (
-    <div className="ss-modal-backdrop">
-      <div className="ss-modal" role="dialog" aria-modal="true">
-        <h3>支付灵活费用：{def?.nameZh ?? '卡牌'}</h3>
-        <p className="ss-muted">
-          需支付 {min}–{max} 种不同能量，每种最多 {maxPer} 个。
-        </p>
-        <div className="ss-alloc">
-          {ELEMENTS.map((element) => (
-            <div className="ss-alloc-row" key={element}>
-              <ElementChoice element={element} count={player.energies[element]} selected={countOf(element) > 0} />
-              <ElementPips element={element} count={countOf(element)} size="sm" showEmpty />
-              <button
-                type="button"
-                className="ss-button"
-                disabled={player.energies[element] < countOf(element) + 1}
-                onClick={() => toggle(element)}
-              >
-                支付
-              </button>
-            </div>
-          ))}
-        </div>
-        <div className="ss-choice-row">
-          <button type="button" className="ss-button" onClick={onCancel}>
-            取消
-          </button>
-          <button
-            type="button"
-            className="ss-button ss-button-primary"
-            disabled={!valid}
-            onClick={() => onConfirm(paid)}
-          >
-            支付并召唤（{paid.length} 种）
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  }
+  return result;
 }
 
-function EnergyRow({ player }: { player: SeasonsPlayerView }) {
-  return (
-    <div className="ss-energies" aria-label="能量储备">
-      <ElementRow counts={player.energies} label="能量储备" />
-      <span className="ss-energy-total" title="元素储备上限">
-        <ElementPips element="water" count={0} size="sm" />上限 {player.maxEnergy}
-      </span>
-    </div>
-  );
-}
+function CardFace(props: {
+  card: SeasonsCardView; onClick?: () => void; disabled?: boolean; selected?: boolean; label?: string;
+  onInspect?: (card: SeasonsCardView, x: number, y: number) => void;
+  reserve?: Partial<Record<Element, number>>;
+}) { return <TableCard {...props} />; }
 
-function PlayerBlock({
+function PlayerIdentity({
   player,
-  label,
-  active = false,
-  compact = false,
-  highlightUids,
-  float,
-  onPlayedClick,
+  name,
+  isMe,
+  canAct,
+  drawUpgrade,
+  selectedDice,
+  onBadge,
   onInspect,
-  elementRef,
-}: {
-  player: SeasonsPlayerView;
-  label: string;
-  active?: boolean;
-  compact?: boolean;
-  highlightUids?: Set<number>;
-  float?: { crystals?: number; gauge?: number; energy?: number };
-  onPlayedClick?: (uid: number) => void;
-  onInspect: (cardId: number) => void;
-  /** 观战跟随时用来定位/滚动到该玩家区块。 */
-  elementRef?: (node: HTMLElement | null) => void;
-}) {
-  const seatColor = SEAT_COLORS[player.seat % SEAT_COLORS.length];
-  return (
-    <section
-      ref={elementRef}
-      className={`ss-player${player.isYou ? ' ss-player-you' : ''}${active ? ' ss-player-active' : ''}`}
-      style={{ ['--ss-seat' as string]: seatColor }}
-    >
-      {active && <span className="ss-active-tag">行动中</span>}
-      {float && (
-        <span className="ss-floats" aria-live="polite">
-          {float.crystals ? (
-            <span className={float.crystals > 0 ? 'ss-float ss-float-up' : 'ss-float ss-float-down'}>
-              {float.crystals > 0 ? '+' : ''}
-              {float.crystals} 水晶
-            </span>
-          ) : null}
-          {float.gauge ? (
-            <span className={float.gauge > 0 ? 'ss-float ss-float-up' : 'ss-float ss-float-down'}>
-              {float.gauge > 0 ? '+' : ''}
-              {float.gauge} 等级
-            </span>
-          ) : null}
-          {float.energy ? (
-            <span className={float.energy > 0 ? 'ss-float ss-float-up' : 'ss-float ss-float-down'}>
-              {float.energy > 0 ? '+' : ''}
-              {float.energy} 能量
-            </span>
-          ) : null}
-        </span>
-      )}
-      <header className="ss-player-head">
-        <span className="ss-seat-tag">{label}</span>
-        <strong>{player.isYou ? '你' : '对手'}</strong>
-        <span className="ss-stat" title="水晶">
-          💎 {player.crystals}
-        </span>
-        <span className="ss-stat" title="召唤等级">
-          ⚡ 等级 {player.gauge}
-        </span>
-        <span className="ss-stat" title="手牌数">
-          ✋ {player.handCount}
-        </span>
-        {player.badgesUsed > 0 && <span className="ss-stat">🎖 徽章 {player.badgesUsed}</span>}
-        {player.draftHandCount > 0 && <span className="ss-stat">🃏 轮抽 {player.draftHandCount} 张</span>}
-        {player.organizeDone && <span className="ss-stat">✅ 已组牌</span>}
-      </header>
-      {compact ? (
-        <div className="ss-player-line">
-          <span className="ss-stat" title="水晶">💎 {player.crystals}</span>
-          <span className="ss-stat" title="召唤等级">⚡ {player.gauge}</span>
-          <span className="ss-stat" title="手牌">✋ {player.handCount}</span>
-          <span className="ss-stat" title="场上卡牌">🃏 {player.played.length}</span>
-          {player.badgesUsed > 0 && <span className="ss-stat">🎖 {player.badgesUsed}</span>}
-          {player.draftHandCount > 0 && <span className="ss-stat">轮抽 {player.draftHandCount}</span>}
-        </div>
-      ) : (
-        <EnergyRow player={player} />
-      )}
-      {!compact && (
-      <div className="ss-piles">
-        <CardPile
-          count={player.libraryCount}
-          label="牌库（第 2、3 年）"
-          kind="library"
-          accent={seatColor}
-        />
-      </div>
-      )}
-      <div className="ss-played">
-        {player.played.length === 0 ? (
-          <span className="ss-muted">场上还没有牌</span>
-        ) : (
-          player.played.map((card) => (
-            <CardMini
-              key={card.u}
-              card={card}
-              fresh={highlightUids?.has(card.u)}
-              hint={card.used ? '本回合已激活' : onPlayedClick ? '点击激活' : undefined}
-              onClick={onPlayedClick && !card.used ? () => onPlayedClick(card.u) : undefined}
-              onInspect={onInspect}
-            />
-          ))
-        )}
-      </div>
-    </section>
-  );
-}
-
-
-
-/** F8.2 行动提示：只读现有 view，告诉玩家「现在能做什么」。 */
-function ActionHints({
-  game,
-  player,
-  canAct,
-}: {
-  game: SeasonsGameView;
-  player: SeasonsPlayerView;
-  canAct: boolean;
-}) {
-  if (!canAct || game.pendingChoice) return null;
-
-  const rows: string[] = [];
-  if (game.phase === 'draft') {
-    if (game.myTurn) rows.push(`从轮抽手牌选 1 张（第 ${game.draftRound + 1}/9 轮）`);
-    else rows.push('等待其他玩家选牌');
-  } else if (game.phase === 'organize') {
-    if (game.myTurn) {
-      const yearIndex = player.organizeYear1 === null ? 1 : 2;
-      rows.push(`选 3 张作为第 ${yearIndex} 年牌库`);
-    } else rows.push('等待其他玩家组牌');
-  } else if (game.phase === 'play') {
-    if (game.turnOwner === null) {
-      rows.push(game.myTurn ? '选一颗骰子开始本月行动' : '等待起始玩家选骰');
-    } else if (game.myTurn) {
-      const summonable = (player.hand ?? []).filter(
-        (card) => summonBlockReason(player, card.i, game.playerCount) === null,
-      ).length;
-      const activatable = player.played.filter((card) => {
-        const def = CARD_BY_ID.get(card.i);
-        if (!def || card.used) return false;
-        const effect = def.effect;
-        return effect?.trigger === 'activation' || effect?.triggers?.includes('activation');
-      }).length;
-      if (summonable > 0) rows.push(`可召唤 ${summonable} 张`);
-      if (activatable > 0) rows.push(`可激活 ${activatable} 张`);
-      if (player.canTransmute) rows.push('可晶化 1 次');
-      if (player.badgesUsed < MAX_BADGES) rows.push('可用徽章');
-      rows.push('或结束回合');
-    } else rows.push('等待其他玩家行动');
-  }
-
-  if (rows.length === 0) return null;
-  return (
-    <div className="ss-hints" role="status" aria-live="polite">
-      <span className="ss-hints-label">现在可以</span>
-      {rows.map((row) => (
-        <span key={row} className="ss-hint">
-          {row}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-/** F4.2 召唤确认条：选中手牌后先预览费用与剩余储备，再确认提交。 */
-function SummonConfirm({
-  cardId,
-  player,
-  playerCount,
-  onCancel,
-  onConfirm,
-}: {
-  cardId: number;
-  player: SeasonsPlayerView;
-  playerCount: number;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const def = CARD_BY_ID.get(cardId);
-  const reserve = reserveOf(player);
-  const byPlayers = def?.costByPlayers as
-    | Partial<Record<string, Partial<SeasonsCardCost>>>
-    | undefined;
-  const cost: SeasonsCardCost = {
-    water: 0,
-    air: 0,
-    fire: 0,
-    earth: 0,
-    crystal: 0,
-    ...(def?.cost ?? {}),
-    ...(byPlayers?.[String(playerCount)] ?? {}),
-  };
-  const after: Partial<Record<Element, number>> = {};
-  for (const element of ELEMENTS) after[element] = Math.max(0, reserve[element] - (cost[element] ?? 0));
-  return (
-    <div className="ss-confirm" role="dialog" aria-label="确认召唤">
-      <div className="ss-confirm-main">
-        <strong>{def?.nameZh ?? `卡牌 #${cardId}`}</strong>
-        <span className="ss-muted">费用</span>
-        <ElementCost counts={cost} crystal={cost.crystal ?? 0} />
-        <span className="ss-muted">召唤后剩余</span>
-        <ElementRow counts={after} size="sm" />
-        {(cost.crystal ?? 0) > 0 && (
-          <span className="ss-muted">
-            水晶 {player.crystals} → {Math.max(0, player.crystals - (cost.crystal ?? 0))}
-          </span>
-        )}
-      </div>
-      <div className="ss-confirm-actions">
-        <button type="button" className="ss-button ss-button-ghost" onClick={onCancel}>
-          取消
-        </button>
-        <button type="button" className="ss-button ss-button-primary" onClick={onConfirm}>
-          确认召唤
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function MyZone({
-  player,
-  game,
-  canAct,
   onSend,
-  onFlexSummon,
-  onSelectSummon,
-  onInspect,
+  payment,
+  paying,
+  onSource,
+  reserveOnly,
 }: {
   player: SeasonsPlayerView;
-  game: SeasonsGameView;
+  name: string;
+  isMe: boolean;
   canAct: boolean;
+  drawUpgrade: boolean;
+  selectedDice: SeasonsDieView[];
+  onBadge: (type: BadgeType, dieId?: number) => void;
+  onInspect: (card: SeasonsCardView, x: number, y: number) => void;
   onSend: (action: SeasonsAction) => void;
-  onFlexSummon: (uid: number) => void;
-  onSelectSummon: (uid: number, cardId: number) => void;
-  onInspect: (cardId: number) => void;
+  payment: readonly SeasonsElementSource[];
+  paying: boolean;
+  onSource: (source: SeasonsElementSource) => void;
+  reserveOnly: boolean;
 }) {
-  const [picked, setPicked] = useState<number[]>([]);
-  const [handSort, setHandSort] = useState<HandSort>('default');
-
-  if (game.phase === 'draft' && player.draftHand) {
-    return (
-      <section className="ss-hand">
-        <h3>
-          轮抽手牌 · 第 {game.draftRound + 1} / 9 轮
-          {canAct ? ' · 点一张牌选中' : ''}
-        </h3>
-        <div className="ss-hand-cards">
-          {player.draftHand.map((card) => (
-            <CardTile onInspect={onInspect}
-              key={card.u}
-              card={card}
-              hint={canAct ? '点击选中' : undefined}
-              onClick={canAct ? () => onSend({ type: 'draft-pick', cardUid: card.u }) : undefined}
-            />
-          ))}
-        </div>
-      </section>
-    );
-  }
-
-  if (game.phase === 'organize' && player.drafted) {
-    const year1 = player.organizeYear1 ?? [];
-    const year2 = player.organizeYear2 ?? [];
-    const remaining = player.drafted.filter((card) => !year1.includes(card.u) && !year2.includes(card.u));
-    const year1Cards = player.drafted.filter((card) => year1.includes(card.u));
-    const year2Cards = player.drafted.filter((card) => year2.includes(card.u));
-    const year3Cards = remaining.filter((card) => !picked.includes(card.u));
-    const pickedCards = picked
-      .map((uid) => player.drafted?.find((card) => card.u === uid))
-      .filter((card): card is SeasonsCardView => Boolean(card));
-    const fillingYear = year1.length === 0 ? 1 : year2.length === 0 ? 2 : 3;
-    const toggle = (uid: number) =>
-      setPicked((current) =>
-        current.includes(uid)
-          ? current.filter((item) => item !== uid)
-          : current.length >= 3
-            ? current
-            : [...current, uid],
-      );
-    const submitYear = () => {
-      if (picked.length !== 3) return;
-      onSend({ type: 'organize', cardUids: [picked[0]!, picked[1]!, picked[2]!] });
-      setPicked([]);
-    };
-    const yearRows = [
-      { key: 'y1', label: '第 1 年', cards: year1Cards, planned: fillingYear === 1 },
-      { key: 'y2', label: '第 2 年', cards: year2Cards, planned: fillingYear === 2 },
-      { key: 'y3', label: '第 3 年（自动）', cards: year3Cards, planned: fillingYear === 3 },
-    ];
-    return (
-      <section className="ss-hand ss-organize">
-        <h3>
-          组牌 · 当前第 {fillingYear} 年 · 已放 {year1.length + year2.length} / 9
-          {player.organizeDone ? ' · 已完成' : ''}
-        </h3>
-        <div className="ss-organize-plan">
-          {yearRows.map((row) => (
-            <div
-              className={`ss-organize-year${row.planned ? ' ss-organize-year-current' : ''}`}
-              key={row.key}
-            >
-              <span className="ss-organize-year-label">
-                {row.label}
-                <span className="ss-muted"> · {row.cards.length} 张</span>
-              </span>
-              <div className="ss-organize-year-cards">
-                {row.cards.length === 0 ? (
-                  <span className="ss-muted">空</span>
-                ) : (
-                  row.cards.map((card) => <CardMini key={card.u} card={card} />)
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="ss-hand-cards">
-          {player.drafted.map((card) => {
-            const belongs = year1.includes(card.u) ? '第 1 年' : year2.includes(card.u) ? '第 2 年' : undefined;
-            const isPicked = picked.includes(card.u);
-            return (
-              <CardTile onInspect={onInspect}
-                key={card.u}
-                card={card}
-                selected={isPicked}
-                tag={belongs}
-                disabled={Boolean(belongs)}
-                hint={belongs ?? (isPicked ? '已选中' : canAct ? '点击选中' : undefined)}
-                onClick={
-                  canAct && !player.organizeDone && !belongs ? () => toggle(card.u) : undefined
-                }
-              />
-            );
-          })}
-        </div>
-        {canAct && !player.organizeDone && (
-          <div className="ss-organize-bar">
-            <div className="ss-organize-picked">
-              <span className="ss-muted">本次选择 {pickedCards.length} / 3</span>
-              {pickedCards.map((card) => (
-                <CardMini key={card.u} card={card} />
-              ))}
-            </div>
-            <div className="ss-organize-actions">
-              <button
-                type="button"
-                className="ss-button ss-button-ghost"
-                disabled={picked.length === 0}
-                onClick={() => setPicked([])}
-              >
-                清空选择
-              </button>
-              <button
-                type="button"
-                className="ss-button ss-button-ghost"
-                disabled={year1.length + year2.length === 0}
-                onClick={() => {
-                  if (window.confirm('撤回已放好的牌，重新从第 1 年开始组牌？')) {
-                    setPicked([]);
-                    onSend({ type: 'organize-reset' });
-                  }
-                }}
-              >
-                撤回重选
-              </button>
-              <button
-                type="button"
-                className="ss-button ss-button-primary"
-                disabled={picked.length !== 3}
-                onClick={submitYear}
-              >
-                提交第 {fillingYear} 年（3 张）
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
-    );
-  }
+  const [library, setLibrary] = useState<2 | 3 | null>(null);
+  const used = Math.min(MAX_BADGES, player.badgesUsed);
+  const cardPoints = player.played.reduce((sum, card) => sum + (CARD_BY_ID.get(card.printedId ?? card.i)?.points ?? 0), 0);
+  const count = library === 2 ? player.library2Count : library === 3 ? player.library3Count : 0;
+  const cards = library === 2 ? player.library2 : library === 3 ? player.library3 : null;
+  const badges = tableArt('bonuses');
 
   return (
-    <section className="ss-hand">
-      <div className="ss-hand-head">
-        <h3>手牌 {player.hand ? `· ${player.hand.length} 张` : ''}{canAct ? ' · 点一张牌召唤' : ''}</h3>
-        {player.hand && player.hand.length > 1 && (
-          <div className="ss-hand-sort" role="group" aria-label="手牌排序">
-            <span className="ss-muted">排序</span>
-            {(
-              [
-                ['default', '默认'],
-                ['cost', '费用'],
-                ['type', '类型'],
-              ] as const
-            ).map(([mode, label]) => (
-              <button
-                key={mode}
-                type="button"
-                className={`ss-sort-button${handSort === mode ? ' ss-sort-active' : ''}`}
-                aria-pressed={handSort === mode}
-                onClick={() => setHandSort(mode)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="ss-hand-cards">
-        {player.hand && player.hand.length > 0 ? (
-          sortHand(player.hand, handSort).map((card) => {
-            const reason = summonBlockReason(player, card.i, game.players.length);
-            const blocked = canAct && reason !== null;
-            return (
-              <CardTile onInspect={onInspect}
-                key={card.u}
-                card={card}
-                disabled={blocked}
-                hint={reason ?? (isFlexCard(card.i) ? '选择支付后召唤' : '点击召唤')}
-                onClick={
-                  canAct && reason === null
-                    ? () =>
-                        isFlexCard(card.i)
-                          ? onFlexSummon(card.u)
-                          : onSend({ type: 'summon', cardUid: card.u })
-                    : undefined
-                }
-              />
-            );
-          })
-        ) : (
-          <span className="ss-muted">没有手牌</span>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function PlayActions({
-  game,
-  player,
-  canAct,
-  onSend,
-}: {
-  game: SeasonsGameView;
-  player: SeasonsPlayerView;
-  canAct: boolean;
-  onSend: (action: SeasonsAction) => void;
-}) {
-  const [endArmed, setEndArmed] = useState(false);
-  useEffect(() => {
-    if (!endArmed) return;
-    const timer = window.setTimeout(() => setEndArmed(false), 3000);
-    return () => window.clearTimeout(timer);
-  }, [endArmed]);
-  if (game.phase !== 'play') return null;
-  return (
-    <section className="ss-actions">
-      {canAct && player.canTransmute && (
-        <div className="ss-transmute">
-          <span className="ss-muted">转化 1 点能量 → 当季水晶：</span>
-          {game.transmuteValues.map(({ element, value }) => (
-            <button
-              key={element}
-              type="button"
-              className="ss-button"
-              onClick={() => onSend({ type: 'transmute', element })}
-              title={`${ELEMENT_NAME[element]} → ${value} 水晶`}
-            >
-              <ElementChoice element={element} count={1} />
-              <span className="ss-muted">+{value}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="ss-actions-row">
-        <button
-          type="button"
-          className={`ss-button ${endArmed ? 'ss-button-danger' : 'ss-button-primary'}`}
-          disabled={!canAct}
-          onClick={() => {
-            if (!endArmed) {
-              setEndArmed(true);
-              return;
-            }
-            setEndArmed(false);
-            onSend({ type: 'end-turn' });
-          }}
-        >
-          {endArmed ? '再点一次确认结束回合' : '结束回合'}
-        </button>
-        <button
-          type="button"
-          className="ss-button ss-button-ghost"
-          disabled={!canAct}
-          onClick={() => onSend({ type: 'resign' })}
-        >
-          认输
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function DicePool({
-  game,
-  canAct,
-  onSend,
-  onHelp,
-}: {
-  game: SeasonsGameView;
-  canAct: boolean;
-  onSend: (action: SeasonsAction) => void;
-  onHelp?: () => void;
-}) {
-  if (game.dice.length === 0) return null;
-  const pickable = canAct && game.phase === 'play' && game.turnOwner === null;
-  const remaining = game.dice.filter((die) => die.pickedBy === null).length;
-  return (
-    <section className="ss-dice-band" aria-label="本月骰子">
-      <div className="ss-dice-head">
-        <span className="ss-dice-title">本月骰池</span>
-        {onHelp && (
-          <button type="button" className="ss-link-button" onClick={onHelp}>
-            骰面说明
-          </button>
-        )}
-        <span className="ss-muted">
-          {pickable
-            ? remaining > 0
-              ? `点击选择一颗骰子（剩 ${remaining} 颗）`
-              : '骰子已选完'
-            : game.dice.every((die) => die.pickedBy !== null)
-              ? '按选择顺序行动'
-              : '等待其他玩家选骰'}
-        </span>
-      </div>
-      <div className="ss-dice" key={`${game.year}-${game.seasonIdx}-${game.month}`}>
-        {game.dice.map((die, index) => {
+    <section className={`ss-identity${isMe ? ' ss-identity-me' : ''}`}>
+      <span className="ss-identity-crystal">◈ {player.crystals}</span>
+      <span className="ss-identity-points">{cardPoints}</span>
+      <span className="ss-avatar" aria-hidden>{name.slice(0, 1)}</span>
+      <b className="ss-identity-name" title={name}>{name}</b>
+      <span className="ss-identity-dice" aria-label={`${name} 已选择的季节骰`}>
+        {selectedDice.map((die) => {
           const art = dieArt(die.letter, die.id, die.face);
-          const picked = die.pickedBy !== null;
-          const seatColor = picked ? SEAT_COLORS[(die.pickedBy as number) % SEAT_COLORS.length] : undefined;
-          return (
-            <figure
-              role={pickable && !picked ? 'button' : undefined}
-              tabIndex={pickable && !picked ? 0 : undefined}
-              aria-label={`骰子 ${die.pip} 点${picked ? `，座位 ${(die.pickedBy as number) + 1} 已选` : '，可选'}`}
-              title={`${SEASON_NAME[die.letter] ?? ''}${die.id} 号骰 · ${die.pip} 点 · ${describeRewards(die.rewards)}`}
-              className={[
-                'ss-die',
-                picked ? 'ss-die-picked' : '',
-                pickable && !picked ? 'ss-die-clickable' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              key={die.id}
-              style={{ animationDelay: `${index * 45}ms` }}
-              onClick={pickable && !picked ? () => onSend({ type: 'draft-dice', dieIndex: index }) : undefined}
-              onKeyDown={(event) => {
-                if (!pickable || picked) return;
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  onSend({ type: 'draft-dice', dieIndex: index });
-                }
-              }}
-            >
-              {art ? (
-                <img
-                  src={art}
-                  alt={`骰子 ${die.pip} 点`}
-                  draggable={false}
-                  style={seatColor ? { borderColor: seatColor } : undefined}
-                />
-              ) : (
-                <div className="ss-die-missing">{die.pip}</div>
-              )}
-              <figcaption>
-                {die.pip} 点
-                {picked ? (
-                  <span className="ss-die-owner" style={{ color: seatColor }}>
-                    座位 {(die.pickedBy as number) + 1}
-                  </span>
-                ) : null}
-              </figcaption>
-              <RewardLine die={die} />
-            </figure>
+          return art ? (
+            <img key={die.id} src={art} alt="" draggable={false} />
+          ) : (
+            <i key={die.id} aria-hidden />
           );
         })}
+      </span>
+      <ReserveBank player={player} selected={payment} paying={paying} onSelect={onSource} reserveOnly={reserveOnly} />
+      <div className="ss-badge-grid" aria-label="徽章行动">
+        {[1, 2, 3, 4].map((type) => (
+          <button
+            key={type}
+            type="button"
+            className={`ss-badge${used >= MAX_BADGES ? ' ss-badge-used' : ''}`}
+            disabled={!isMe || (!canAct && !(type === 4 && drawUpgrade)) || used >= MAX_BADGES}
+            title={`${BADGE_LABEL[type as BadgeType]}${used >= MAX_BADGES ? '（已用完）' : ''}`}
+            aria-label={BADGE_LABEL[type as BadgeType]}
+            onClick={() => onBadge(type as BadgeType)}
+            data-badge={type}
+            style={badges ? ({ '--ss-bonus-image': `url("${badges}")` } as CSSProperties) : undefined}
+          >
+            <img src={markerArt(`badge-${type}`)} alt="" />
+          </button>
+        ))}
       </div>
+      <div className="ss-year-pips">
+        {[2, 3].map((year) => (
+          <button
+            key={year}
+            type="button"
+            className={library === year ? 'ss-year-active' : undefined}
+            onClick={() => setLibrary((current) => (current === year ? null : (year as 2 | 3)))}
+            title={`查看第 ${year} 年手牌`}
+            aria-label={`查看第 ${year} 年手牌`}
+            aria-pressed={library === year}
+          >
+            <img src={markerArt(`year-${year}`)} alt="" />
+          </button>
+        ))}
+      </div>
+      {library !== null && (
+        <div className="ss-year-overlay">
+          <header>
+            <b>第 {library} 年</b>
+            <span>{count} 张</span>
+            <button type="button" onClick={() => setLibrary(null)} aria-label="关闭年份手牌">×</button>
+          </header>
+          <div>
+            {isMe && cards
+              ? cards.map((card) => (
+                  <TableCard key={card.u} card={card} />
+                ))
+              : Array.from({ length: Math.min(count, 9) }, (_, index) => (
+                  <span className="ss-card-back" key={index} aria-label="隐藏的年份手牌" />
+                ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
-function RewardLine({ die }: { die: SeasonsGameView['dice'][number] }) {
-  const parts: string[] = [];
-  const rewards = die.rewards;
-  if (rewards.summon) parts.push('召唤+1');
-  if (rewards.transmute) parts.push('转化');
-  if (rewards.card) parts.push('抽牌');
-  if (rewards.crystals) parts.push(`水晶+${rewards.crystals}`);
-  for (const element of ELEMENTS) {
-    const count = rewards[element];
-    if (count) parts.push(`${ELEMENT_NAME[element]}+${count}`);
-  }
-  return <span className="ss-die-reward">{parts.join(' ')}</span>;
-}
-
-
-function BadgeBar({
-  player,
-  canAct,
-  onSend,
+function AbilityPicker({
+  card,
+  onPick,
+  onCancel,
 }: {
-  player: SeasonsPlayerView;
-  canAct: boolean;
-  onSend: (action: SeasonsAction) => void;
+  card: SeasonsCardView;
+  onPick: (key: string) => void;
+  onCancel: () => void;
 }) {
-  const [mode, setMode] = useState<'idle' | 'swap' | 'crystal'>('idle');
-  const [from, setFrom] = useState<Element[]>([]);
-  const [to, setTo] = useState<Element[]>([]);
-  const remaining = Math.max(0, MAX_BADGES - player.badgesUsed);
-  const reset = () => {
-    setMode('idle');
-    setFrom([]);
-    setTo([]);
-  };
-  const disabled = !canAct || remaining === 0;
-
-  const clickSwap = (element: Element) => {
-    if (from.length < 2) {
-      setFrom([...from, element]);
-      return;
-    }
-    if (to.length < 2) {
-      const nextTo = [...to, element];
-      setTo(nextTo);
-      if (nextTo.length === 2) {
-        onSend({ type: 'use-badge', badgeType: 1, fromElements: [from[0]!, from[1]!], toElements: nextTo as [Element, Element] });
-        reset();
-      }
-    }
-  };
-
-  if (player.badgesUsed >= MAX_BADGES) {
-    return (
-      <section className="ss-badges">
-        <span className="ss-muted">🎖 徽章已用完</span>
-      </section>
-    );
-  }
-
   return (
-    <section className="ss-badges" aria-label="徽章">
-      <span className="ss-badges-count">🎖 徽章 {remaining}/{MAX_BADGES}</span>
-      {mode === 'idle' && (
-        <div className="ss-badges-row">
-          <button type="button" className="ss-button" disabled={disabled} onClick={() => setMode('swap')}>
-            ① 换能量
-          </button>
-          <button type="button" className="ss-button" disabled={disabled} onClick={() => setMode('crystal')}>
-            ② 能量换水晶
-          </button>
-          <button
-            type="button"
-            className="ss-button"
-            disabled={disabled}
-            onClick={() => onSend({ type: 'use-badge', badgeType: 3 })}
-          >
-            ③ 召唤等级 +1
-          </button>
-          <button
-            type="button"
-            className="ss-button"
-            disabled={disabled}
-            onClick={() => onSend({ type: 'use-badge', badgeType: 4 })}
-          >
-            ④ 抽卡升级（摸 2 选 1）
-          </button>
-        </div>
-      )}
-      {mode === 'swap' && (
-        <div className="ss-badges-row">
-          <span className="ss-muted">
-            先选 2 个移除（{from.map((element) => ELEMENT_NAME[element]).join('、') || '—'}），再选 2 个获得（
-            {to.map((element) => ELEMENT_NAME[element]).join('、') || '—'}）
-          </span>
-          {ELEMENTS.map((element) => (
-            <button
-              key={element}
-              type="button"
-              className="ss-button"
-              onClick={() => clickSwap(element)}
-              title={`${ELEMENT_NAME[element]}（现有 ${player.energies[element]}）`}
-            >
-              <ElementChoice element={element} count={player.energies[element]} />
+    <div className="ss-inline-choice" role="group" aria-label="选择激活效果">
+        <h3>选择激活效果 · {cardName(card.i)}</h3>
+        <div className="ss-modal-actions ss-modal-column">
+          {abilityOptions(card.i).map((ability) => (
+            <button type="button" className="ss-button" key={ability.key} onClick={() => onPick(ability.key)}>
+              {ability.label}
             </button>
           ))}
-          <button type="button" className="ss-button ss-button-ghost" onClick={reset}>
-            取消
-          </button>
+          <button type="button" className="ss-button ss-button-ghost" onClick={onCancel}>取消</button>
         </div>
-      )}
-      {mode === 'crystal' && (
-        <div className="ss-badges-row">
-          <span className="ss-muted">选择 1 个能量换水晶（当前季节转换值 +1）：</span>
-          {ELEMENTS.map((element) => (
-            <button
-              key={element}
-              type="button"
-              className="ss-button"
-              onClick={() => {
-                onSend({ type: 'use-badge', badgeType: 2, element });
-                reset();
-              }}
-            >
-              <ElementChoice element={element} count={player.energies[element]} />
-            </button>
-          ))}
-          <button type="button" className="ss-button ss-button-ghost" onClick={reset}>
-            取消
-          </button>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function BadgeKeepModal({ cards, onKeep }: { cards: SeasonsCardView[]; onKeep: (uid: number) => void }) {
-  return (
-    <div className="ss-modal-backdrop">
-      <div className="ss-modal ss-badge-keep">
-        <h3>抽卡升级：保留 1 张</h3>
-        <p className="ss-muted">选中的牌进入手牌，另一张进弃牌堆。</p>
-        <div className="ss-badge-keep-row">
-          {cards.map((card) => (
-            <CardTile key={card.u} card={card} hint="点击保留" onClick={() => onKeep(card.u)} />
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
 
 export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProps<SeasonsGameView>) {
   const game = view.game;
-  const me = mySeat === null ? null : (game.players.find((player) => player.seat === mySeat) ?? null);
-  const opponents = game.players.filter((player) => player.seat !== mySeat);
-  const [paying, setPaying] = useState<{ uid: number; cardId: number } | null>(null);
-  const [confirming, setConfirming] = useState<{ uid: number; cardId: number } | null>(null);
-  const [inspecting, setInspecting] = useState<number | null>(null);
+  const me = mySeat === null ? null : game.players.find((player) => player.seat === mySeat) ?? null;
+  const [hovered, setHovered] = useState<SeasonsCardView | null>(null);
+  const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [abilityCard, setAbilityCard] = useState<SeasonsCardView | null>(null);
+  const [organizePicked, setOrganizePicked] = useState<number[]>([]);
+  const [actionStage, setActionStage] = useState<
+    | { kind: 'summon'; card: SeasonsCardView; otus?: boolean }
+    | { kind: 'activate'; card: SeasonsCardView }
+    | { kind: 'transmute' }
+    | { kind: 'badge'; type: BadgeType }
+    | null
+  >(null);
+  const [actionPayment, setActionPayment] = useState<SeasonsElementSource[]>([]);
+  const [actionReceived, setActionReceived] = useState<Element[]>([]);
+  const [draftKeep, setDraftKeep] = useState<SeasonsCardView | null>(null);
+  const [drawDecision, setDrawDecision] = useState<DrawDecision | null>(null);
+  const [handSort, setHandSort] = useState('default');
+  const [handFilter, setHandFilter] = useState('all');
   const [glossary, setGlossary] = useState(false);
-  const [onboarding, setOnboarding] = useState(false);
-  const spectating = mySeat === null;
-  const activeSeat =
-    game.phase === 'draft' ? game.currentPicker : (game.turnOwner ?? game.currentPicker);
-  const [following, setFollowing] = useState(true);
-  const playerRefs = useRef<Map<number, HTMLElement>>(new Map());
-  const playerRefCallbacks = useRef<Map<number, (node: HTMLElement | null) => void>>(new Map());
-  const followedSeat = useRef<number | null>(null);
-  const refForSeat = (seat: number) => {
-    let callback = playerRefCallbacks.current.get(seat);
-    if (!callback) {
-      callback = (node: HTMLElement | null) => {
-        if (node) playerRefs.current.set(seat, node);
-        else playerRefs.current.delete(seat);
-      };
-      playerRefCallbacks.current.set(seat, callback);
+  const [follow, setFollow] = useState(true);
+  const closeDetail = useCallback(() => setDetailOpen(false), []);
+  const logText = (text: string) =>
+    text
+      .replace(/(?:座位|玩家) (\d+)/g, (_match, seat: string) => playerName(view, Number(seat) - 1))
+      .replace(/（点数 \d+）/g, '')
+      .replace(/季季/g, '季');
+  useEffect(() => {
+    if (mySeat === null && follow && game.turnOwner !== null) {
+      document.querySelector(`[data-player-seat="${game.turnOwner}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
-    return callback;
-  };
-  const prevPlayed = useRef<Map<number, Set<number>>>(new Map());
-  const prevStats = useRef<
-    Map<number, { crystals: number; gauge: number; energy: number; logCount: number }>
-  >(new Map());
-  const [fresh, setFresh] = useState<Map<number, Set<number>>>(new Map());
-  const [floats, setFloats] = useState<Map<number, { crystals?: number; gauge?: number; energy?: number }>>(
-    new Map(),
-  );
-  const [bannerQueue, setBannerQueue] = useState<{ key: number; msg: string; t: string }[]>([]);
-  const shownLog = useRef(0);
-  const prevMyTurn = useRef<boolean>(false);
-  const [turnToast, setTurnToast] = useState(false);
-  const logCount = game.log.length;
-  useEffect(() => {
-    if (logCount === 0) {
-      shownLog.current = 0;
-      return;
-    }
-    if (logCount < shownLog.current) {
-      shownLog.current = logCount;
-      setBannerQueue([]);
-      return;
-    }
-    if (logCount === shownLog.current) return;
-    const added = game.log.slice(shownLog.current).map((entry, index) => ({
-      key: shownLog.current + index,
-      msg: entry.msg,
-      t: entry.t,
-    }));
-    shownLog.current = logCount;
-    setBannerQueue((queue) => [...queue, ...added].slice(-3));
-  }, [logCount, game.log]);
-  useEffect(() => {
-    if (bannerQueue.length === 0) return;
-    const timer = window.setTimeout(() => setBannerQueue((queue) => queue.slice(1)), 1600);
-    return () => window.clearTimeout(timer);
-  }, [bannerQueue]);
-  const banner = bannerQueue[0] ?? null;
-  useEffect(() => {
-    // 观战者没有手牌/召唤操作，不需要玩家版新手引导。
-    if (!spectating && game.phase === 'play' && !onboardingDone()) setOnboarding(true);
-  }, [spectating, game.phase]);
-  useEffect(() => {
-    if (!spectating || !following || activeSeat === null) return;
-    if (followedSeat.current === activeSeat) return;
-    const node = playerRefs.current.get(activeSeat);
-    if (!node) return;
-    followedSeat.current = activeSeat;
-    const reduceMotion =
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    node.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
-  }, [spectating, following, activeSeat]);
+  }, [game.turnOwner, follow, mySeat]);
 
-  useEffect(() => {
-    if (!spectating) return;
-    const pause = () => setFollowing(false);
-    window.addEventListener('wheel', pause, { passive: true });
-    window.addEventListener('touchmove', pause, { passive: true });
-    return () => {
-      window.removeEventListener('wheel', pause);
-      window.removeEventListener('touchmove', pause);
-    };
-  }, [spectating]);
-
-  useEffect(() => {
-    if (game.myTurn && !prevMyTurn.current) {
-      setTurnToast(true);
-      const timer = window.setTimeout(() => setTurnToast(false), 2000);
-      prevMyTurn.current = game.myTurn;
-      return () => window.clearTimeout(timer);
-    }
-    prevMyTurn.current = game.myTurn;
-  }, [game.myTurn]);
-
-  useEffect(() => {
-    const nextStats = new Map<number, { crystals: number; gauge: number; energy: number; logCount: number }>();
-    const changes = new Map<number, { crystals?: number; gauge?: number; energy?: number }>();
-    for (const player of game.players) {
-      const before = prevStats.current.get(player.seat);
-      const energySum = ELEMENTS.reduce((acc, element) => acc + player.energies[element], 0);
-      if (before) {
-        const diff = {
-          crystals: player.crystals - before.crystals,
-          gauge: player.gauge - before.gauge,
-          energy: energySum - before.energy,
-        };
-        if (diff.crystals !== 0 || diff.gauge !== 0 || diff.energy !== 0) changes.set(player.seat, diff);
-      }
-      nextStats.set(player.seat, { crystals: player.crystals, gauge: player.gauge, energy: energySum, logCount });
-    }
-    prevStats.current = nextStats;
-    if (changes.size > 0) {
-      setFloats(changes);
-      const timer = window.setTimeout(() => setFloats(new Map()), 1700);
-      return () => window.clearTimeout(timer);
-    }
-  }, [game.players]);
-  useEffect(() => {
-    const nextPlays = new Map<number, Set<number>>();
-    const freshPlays = new Map<number, Set<number>>();
-    for (const player of game.players) {
-      const before = prevPlayed.current.get(player.seat) ?? new Set<number>();
-      const added = new Set(player.played.map((card) => card.u).filter((uid) => !before.has(uid)));
-      if (added.size > 0) freshPlays.set(player.seat, added);
-      nextPlays.set(player.seat, new Set(player.played.map((card) => card.u)));
-    }
-    prevPlayed.current = nextPlays;
-    if (freshPlays.size > 0) {
-      setFresh(freshPlays);
-      const timer = window.setTimeout(() => setFresh(new Map()), 1500);
-      return () => window.clearTimeout(timer);
-    }
-  }, [game.players]);
-  const hasChoice = game.pendingChoice !== null;
-  const hasBadgeDraw = (me?.badgeDraw?.length ?? 0) > 0;
-  const canAct = !disabled && view.status === 'active' && game.myTurn && !hasChoice && !hasBadgeDraw;
   const send = (action: SeasonsAction) => {
     if (disabled || view.status !== 'active') return;
     onAction(action);
   };
 
+  const boardArt = tableArt('board-bg');
+  const yearIcons = tableArt('icons2022');
+  const isMyPendingChoice = game.pendingChoice?.choosingSeat === mySeat;
+  const winterStaff = Math.floor(game.month / 3) % 4 === 0 &&
+    !!me?.played.some((card) => card.i === 78 && !card.lockedBy);
+  const canOrganize =
+    !disabled && view.status === 'active' && game.phase === 'organize' && game.myTurn && !isMyPendingChoice;
+  const canPickDie =
+    !disabled &&
+    view.status === 'active' &&
+    game.phase === 'play' &&
+    game.turnOwner === null &&
+    game.currentPicker === mySeat &&
+    !isMyPendingChoice;
+  const canPlay =
+    !disabled &&
+    view.status === 'active' &&
+    game.phase === 'play' &&
+    game.turnOwner === mySeat &&
+    !game.pendingChoice &&
+    !me?.badgeDraw?.length;
+  const canPickDraft =
+    !disabled &&
+    view.status === 'active' &&
+    game.phase === 'draft' &&
+    game.myTurn &&
+    !isMyPendingChoice;
+
+  const inspect = (card: SeasonsCardView, x: number, y: number) => {
+    setHovered(card);
+    setHoverPos({
+      x: Math.min(Math.max(12, x), Math.max(12, window.innerWidth - 430)),
+      y: Math.min(Math.max(12, y - 80), Math.max(12, window.innerHeight - 580)),
+    });
+    setDetailOpen(true);
+  };
+  const leaveHover = () => setDetailOpen(false);
+  const activate = (card: SeasonsCardView) => {
+    if (!canPlay || card.lockedBy) return;
+    if ([50, 80, 88].includes(card.i)) {
+      setActionPayment([]);
+      setActionStage({ kind: 'activate', card });
+      return;
+    }
+    const options = abilityOptions(card.i);
+    if (options.length > 1) setAbilityCard(card);
+    else send({
+      type: 'activate',
+      cardUid: card.u,
+      ...(options[0] ? { abilityKey: options[0].key } : {}),
+    });
+  };
+  const summon = (card: SeasonsCardView, otus = false) => {
+    if (!canPlay) return;
+    const def = CARD_BY_ID.get(card.i);
+    const cost = def ? { ...def.cost, ...def.costByPlayers?.[String(game.playerCount) as '2'] } : undefined;
+    const energyCost = cost ? ELEMENTS.reduce((sum, element) => sum + cost[element], 0) : 0;
+    const hasChoice = def?.costFlexible || (energyCost > 0 && (
+      (winterStaff && (cost?.earth ?? 0) > 0) ||
+      me?.played.some((item) => {
+        if (item.lockedBy) return false;
+        const abilities = CARD_BY_ID.get(item.i)?.effect?.abilities ?? [];
+        return (energyCost > 1 && abilities.some((ability) => ability.kind === 'cost_reduction')) ||
+          (abilities.some((ability) => ability.kind === 'reserve_slot') &&
+            !abilities.some((ability) => ability.kind === 'sealed_energy') &&
+            ELEMENTS.some((element) => (item.stored?.[element] ?? 0) > 0 && (cost?.[element] ?? 0) > 0));
+      })
+    ));
+    if (!hasChoice) {
+      send({ type: otus ? 'summon-otus' : 'summon', cardUid: card.u });
+      return;
+    }
+    setActionPayment([]);
+    setActionStage({ kind: 'summon', card, otus });
+  };
+  const organize = (card: SeasonsCardView) => {
+    if (!canOrganize) return;
+    const serverPicked = me?.organizeYear1 ?? [];
+    const current = organizePicked.filter((uid) => !serverPicked.includes(uid));
+    const next = current.includes(card.u)
+      ? current.filter((uid) => uid !== card.u)
+      : [...current, card.u];
+    if (next.length <= 3) setOrganizePicked(next);
+  };
+  const badgeAction = (type: BadgeType, dieId?: number) => {
+    if (!canPlay && !(type === 4 && game.pendingChoice?.key === 'die_draw' && isMyPendingChoice)) return;
+    if (type === 3) {
+      send({ type: 'use-badge', badgeType: type });
+      return;
+    }
+    if (type === 2) {
+      send({ type: 'use-badge', badgeType: 2 });
+      return;
+    }
+    if (type === 4) {
+      const drawDie = game.dice.find(
+        (die) => die.pickedBy === me?.seat && die.rewards.card,
+      );
+      if (!drawDie) return;
+      send({ type: 'use-badge', badgeType: 4, dieId: drawDie.id });
+      return;
+    }
+    setActionPayment([]);
+    setActionReceived([]);
+    setActionStage({ kind: 'badge', type });
+  };
+  const paymentRequirement = (() => {
+    if (!me) return null;
+    if (!actionStage && isMyPendingChoice && game.pendingChoice) {
+      const pending = game.pendingChoice;
+      if (pending.kind === 'energy_swap' || pending.kind === 'energy_discard') {
+        const amount = pending.kind === 'energy_swap'
+          ? Number(pending.options.discardAmount ?? Number(pending.options.pool) - Number(pending.options.total))
+          : Number(pending.options.amount);
+        return { amount, maxAmount: amount, maxPerType: amount, reserveOnly: true,
+          kind: 'any', title: '', hint: '' };
+      }
+      if (pending.kind === 'element_multi') {
+        const amount = Number(pending.options.amount ?? 0);
+        return { amount, maxAmount: amount, maxPerType: amount, kind: 'any', title: '', hint: '' };
+      }
+      if (pending.key === 'mirror_of_seasons' && pending.options.step !== 'target') {
+        return { amount: 1, maxAmount: me.crystals, maxPerType: me.crystals,
+          perType: pending.options.step === 'amount' ? { [String(pending.options.source)]: me.crystals } : undefined,
+          kind: 'same', title: '', hint: '' };
+      }
+    }
+    if (!actionStage && isMyPendingChoice && (game.pendingChoice?.kind === 'element_pick' ||
+      game.pendingChoice?.options.mode === 'pay')) {
+      const amount = Number(game.pendingChoice.options.amount ?? 1);
+      const flex = game.pendingChoice.options.flexible as { maxPerType: number } | undefined;
+      return { amount, maxAmount: Number(game.pendingChoice.options.maxAmount ?? amount),
+        maxPerType: flex?.maxPerType ?? amount,
+        reserveOnly: game.pendingChoice.options.reserveOnly === true,
+        perType: game.pendingChoice.options.maxPerElement as Partial<Record<Element, number>> | undefined,
+        earthWild: winterStaff && game.pendingChoice.key === 'raven_payment',
+        kind: game.pendingChoice.kind === 'element_pick' && !(winterStaff &&
+          ['balance_of_ishtar', 'estorian_harp', 'jewel_of_the_ancients'].includes(game.pendingChoice.key)) ? 'same' : 'any',
+        title: '', hint: '' };
+    }
+    if (!actionStage) return null;
+    if (actionStage.kind === 'activate' || actionStage.kind === 'transmute') {
+      const element = actionStage.kind === 'activate' ? actionStage.card.i === 88 ? 'air' : 'water' : undefined;
+      return { amount: 1, maxAmount: 1, maxPerType: 1, perType: element ? { [element]: 1 } : undefined,
+        earthWild: false,
+        kind: 'fixed', title: actionStage.kind === 'transmute' ? '元素晶化'
+          : `激活「${cardName(actionStage.card.i)}」`, hint: '' };
+    }
+    if (actionStage.kind === 'summon') {
+      const def = CARD_BY_ID.get(actionStage.card.i);
+      if (def?.costFlexible) {
+        return {
+          amount: def.costFlexible.min,
+          maxAmount: Math.min(def.costFlexible.max || 4, ELEMENTS.length),
+          maxPerType: def.costFlexible.maxPerType || 1,
+          kind: 'flex',
+          title: `召唤「${cardName(actionStage.card.i)}」`,
+          hint: `从储备中选择 ${def.costFlexible.min}~${Math.min(def.costFlexible.max || 4, ELEMENTS.length)} 种元素`,
+        };
+      }
+      const cost = def ? { ...def.cost, ...def.costByPlayers?.[String(game.playerCount) as '2'] } : undefined;
+      const elements = ELEMENTS.flatMap((element) =>
+        Array.from({ length: cost?.[element] ?? 0 }, () => element),
+      );
+      const crystal = cost?.crystal ?? 0;
+      const reduction = me.played.reduce((sum, card) => sum + (card.lockedBy ? 0 : CARD_BY_ID.get(card.i)?.effect?.abilities
+        ?.filter((ability) => ability.kind === 'cost_reduction').reduce((n, ability) => n + (ability.amount ?? 0), 0) ?? 0), 0);
+      const amount = Math.max(elements.length ? 1 : 0, elements.length - reduction);
+      return elements.length > 0 || crystal > 0
+        ? {
+            amount,
+            maxAmount: amount,
+            maxPerType: Math.max(1, ...ELEMENTS.map((element) => cost?.[element] ?? 0)),
+            perType: cost,
+            earthWild: winterStaff,
+            kind: 'fixed',
+            title: `召唤「${cardName(actionStage.card.i)}」`,
+            hint: [
+              elements.length > 0 ? `元素 ${amount} 个${amount < elements.length ? '（已减费）' : ''}` : '',
+              crystal > 0 ? `水晶 ${crystal}` : '',
+            ].filter(Boolean).join('，'),
+          }
+        : {
+            amount: 0,
+            maxAmount: 0,
+            maxPerType: 0,
+            kind: 'fixed',
+            title: `召唤「${cardName(actionStage.card.i)}」`,
+            hint: crystal > 0 ? `水晶 ${crystal}` : '无需支付',
+          };
+    }
+    if (actionStage.kind === 'badge' && actionStage.type === 1) {
+      return {
+        amount: 2,
+        maxAmount: 2,
+        maxPerType: 2,
+        kind: 'exchange',
+        title: '徽章①：元素互换',
+        hint: '选择要支付的 2 个储备元素',
+      };
+    }
+    return null;
+  })();
+  const toggleActionPayment = (source: SeasonsElementSource) => {
+    if (!paymentRequirement || !me) return;
+    if (paymentRequirement.reserveOnly && source.source !== 'reserve') return;
+    const index = actionPayment.findIndex(
+      (item) => sourceKey(item) === sourceKey(source),
+    );
+    if (index >= 0) {
+      setActionPayment((current) => current.filter((_, item) => item !== index));
+      return;
+    }
+    if (
+      actionPayment.length < paymentRequirement.maxAmount &&
+      (paymentRequirement.kind !== 'same' || !actionPayment.length || source.element === actionPayment[0]!.element) &&
+      (!['horn_of_plenty', 'fairy_monolith_store', 'chalice_of_eternity_store'].includes(game.pendingChoice?.key ?? '') || source.source === 'reserve') &&
+      (game.pendingChoice?.kind === 'energy_swap' ||
+        sourceCount(me, source.element, actionPayment, source.cardUid ?? 0) > 0) &&
+      (paymentRequirement.earthWild && paymentRequirement.perType
+        ? ELEMENTS.reduce((sum, element) => sum + (element === 'earth'
+          ? [...actionPayment, source].filter((item) => item.element === element).length
+          : Math.max(0, [...actionPayment, source].filter((item) => item.element === element).length -
+            (paymentRequirement.perType?.[element] ?? 0))), 0) <= (paymentRequirement.perType.earth ?? 0)
+        : actionPayment.filter((item) => item.element === source.element).length <
+          (paymentRequirement.perType ? paymentRequirement.perType[source.element] ?? 0 : paymentRequirement.maxPerType))
+    ) {
+      setActionPayment((current) => [...current, source]);
+    }
+  };
+  const toggleActionReceived = (element: Element) => {
+    setActionReceived((current) =>
+      current.length < 2 ? [...current, element] : current,
+    );
+  };
+  const cancelAction = () => {
+    setActionStage(null);
+    setAbilityCard(null);
+    setActionPayment([]);
+    setActionReceived([]);
+  };
+  const confirmAction = () => {
+    if (!actionStage) return;
+    if (actionPayment.length < (paymentRequirement?.amount ?? 0)) return;
+    if (actionStage.kind === 'activate') {
+      send({ type: 'activate', cardUid: actionStage.card.u, paidSources: actionPayment });
+      cancelAction();
+      return;
+    }
+    if (actionStage.kind === 'transmute') {
+      send({ type: 'transmute', element: winterStaff ? 'earth' : actionPayment[0]!.element, paidSources: actionPayment });
+      cancelAction();
+      return;
+    }
+    if (actionStage.kind === 'summon') {
+      const def = CARD_BY_ID.get(actionStage.card.i);
+      send({
+        type: actionStage.otus ? 'summon-otus' : 'summon',
+        cardUid: actionStage.card.u,
+        ...(def?.costFlexible
+          ? { paidSources: actionPayment }
+          : actionPayment.length > 0
+            ? { paidSources: actionPayment }
+            : {}),
+      });
+      cancelAction();
+      return;
+    }
+    if (actionStage.kind === 'badge') {
+      if (actionStage.type === 1) {
+        if (actionReceived.length !== 2) return;
+        send({
+          type: 'use-badge',
+          badgeType: 1,
+           paidSources: actionPayment,
+          fromElements: [actionPayment[0]!.element, actionPayment[1]!.element],
+          toElements: [actionReceived[0]!, actionReceived[1]!],
+        });
+      } else if (actionStage.type === 3) {
+        send({ type: 'use-badge', badgeType: 3 });
+      }
+    }
+    cancelAction();
+  };
+
+  useEffect(() => {
+    setOrganizePicked([]);
+  }, [game.draftRound, game.phase, game.month]);
+  useEffect(() => {
+    setActionPayment([]);
+    setActionReceived([]);
+    setActionStage(null);
+    setAbilityCard(null);
+  }, [game.month, game.turnOwner, game.pendingChoice?.kind, game.pendingChoice?.key,
+    JSON.stringify(game.pendingChoice?.options)]);
+  useEffect(() => {
+    setDraftKeep(null);
+    if (game.pendingChoice?.key !== 'die_draw') {
+      setDrawDecision(null);
+      return;
+    }
+    const cards = Array.isArray(game.pendingChoice.options.cards)
+      ? (game.pendingChoice.options.cards as SeasonsCardView[])
+      : [];
+    setDrawDecision({
+      cards,
+      keep: typeof game.pendingChoice.options.keep === 'number'
+        ? game.pendingChoice.options.keep
+        : 1,
+      titled: game.pendingChoice.options.title as string,
+    });
+  }, [game.pendingChoice]);
+  useEffect(() => {
+    if (!detailOpen) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDetailOpen(false);
+    };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [detailOpen]);
+
+  const organizedYear1 = game.phase === 'organize' ? me?.organizeYear1 ?? [] : [];
+  const organizedYear2 = game.phase === 'organize' ? me?.organizeYear2 ?? [] : [];
+  const organized = [...organizedYear1, ...organizedYear2];
+  const visibleDrafted =
+    game.phase === 'organize' ? me?.organizeRemaining ?? [] : me?.drafted ?? [];
+  const handCards =
+    (game.phase === 'draft'
+      ? me?.draftHand
+      : game.phase === 'organize'
+        ? visibleDrafted
+         : me?.hand) ?? [];
+  const sortedHand = handCards.filter((card) => game.phase !== 'play' || handFilter === 'all' ||
+    CARD_BY_ID.get(card.i)?.type === handFilter).sort((a, b) => {
+    if (handSort === 'default' || game.phase !== 'play') return 0;
+    const ac = CARD_BY_ID.get(a.i)!; const bc = CARD_BY_ID.get(b.i)!;
+    const total = (cost: typeof ac.cost) => ELEMENTS.reduce((sum, element) => sum + cost[element], 0);
+    return (handSort === 'type' ? ac.type.localeCompare(bc.type) : 0) ||
+      total(ac.cost) - total(bc.cost) || ac.cost.crystal - bc.cost.crystal;
+  });
+  const handStyle = {
+    '--ss-hand-count': String(Math.max(1, Math.min(10, handCards.length))),
+  } as CSSProperties;
+  const fullArt = hovered ? cardFullArt(hovered.i) ?? cardArt(hovered.i) : undefined;
+  const wheelIndex = ((game.month % 12) + 12) % 12;
+  const [markerX, markerY] = MONTH_PLACEMENT[wheelIndex] ?? MONTH_PLACEMENT[0];
+  const markerStyle = {
+    left: `${(markerX / 400) * 100}%`,
+    top: `${(markerY / 400) * 100}%`,
+  };
+  const yearMarker = YEAR_PLACEMENT[Math.min(2, Math.max(0, game.year - 1))] ?? YEAR_PLACEMENT[0];
+  const yearStyle = {
+    left: `${((yearMarker.x - yearMarker.size / 2) / 400) * 100}%`,
+    top: `${((yearMarker.y - yearMarker.size / 2) / 400) * 100}%`,
+    width: `${(yearMarker.size / 400) * 100}%`,
+  };
+  const myReserve = me ? energySlots(me) : [];
+  const actionReady =
+    !!actionStage &&
+    !!paymentRequirement &&
+    actionPayment.length >= paymentRequirement.amount &&
+    (actionStage.kind !== 'badge' || actionStage.type !== 1 || actionReceived.length === 2);
+
+  const actionBar = (<div className="ss-opbar">
+            {actionStage && paymentRequirement ? (
+              <>
+                <b className="ss-op-prompt">{paymentRequirement.title}</b>
+                <span className="ss-op-label">
+                  已选 {actionPayment.length} / {paymentRequirement.amount}
+                </span>
+                {actionPayment.map((source, index) => (
+                  <img
+                    className="ss-op-element"
+                    key={`paid-${index}`}
+                    src={elementArt(source.element)}
+                    alt={ELEMENT_NAME[source.element]}
+                  />
+                ))}
+                {actionStage.kind === 'badge' && actionStage.type === 1 && (
+                  <>
+                    <span className="ss-op-label">获得</span>
+                    {[0, 1].map((index) =>
+                      actionReceived[index] ? (
+                        <span className="ss-op-action" key={`received-${index}`}>
+                          <img src={elementArt(actionReceived[index]!)} alt={ELEMENT_NAME[actionReceived[index]!]} />
+                        </span>
+                      ) : (
+                        <span className="ss-op-placeholder" key={`received-${index}`}>＋</span>
+                      ),
+                    )}
+                    {ELEMENTS.map((element) => (
+                      <button
+                        type="button"
+                        className="ss-op-action"
+                        key={`receive-${element}`}
+                        aria-label={`获得${ELEMENT_NAME[element]}元素`}
+                        onClick={() => toggleActionReceived(element)}
+                      >
+                        <img src={elementArt(element)} alt="" />
+                      </button>
+                    ))}
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="ss-op-action ss-op-primary"
+                  disabled={!actionReady}
+                  onClick={confirmAction}
+                >
+                  确认
+                </button>
+                <button type="button" className="ss-op-action" onClick={cancelAction}>
+                  取消
+                </button>
+                <small className="ss-op-label">{paymentRequirement.hint}</small>
+              </>
+             ) : abilityCard ? (
+               <AbilityPicker card={abilityCard} onCancel={() => setAbilityCard(null)}
+                 onPick={(abilityKey) => { send({ type: 'activate', cardUid: abilityCard.u, abilityKey }); setAbilityCard(null); }} />
+             ) : game.pendingChoice?.choosingSeat === mySeat ? (
+              game.pendingChoice.key === 'die_draw'
+                ? <b className="ss-op-prompt">骰面抽牌</b>
+                 : <ChoiceModal game={game} mySeat={mySeat!} onSend={send}
+                     paidSources={actionPayment} payTokens={!!paymentRequirement} />
+            ) : game.phase === 'play' ? (
+              <>
+                {me?.canTransmute && (
+                  <span className="ss-op-label">
+                    元素晶化{me.transmuteBonus ? `（徽章每枚 +${me.transmuteBonus}）` : ''}
+                  </span>
+                )}
+                {me?.canTransmute && <button type="button" className="ss-op-action" disabled={!canPlay}
+                  onClick={() => { setActionPayment([]); setActionStage({ kind: 'transmute' }); }}>晶化</button>}
+                {me?.canTransmute && <span className="ss-transmute-rates">{game.transmuteValues.map(({ element, value }) =>
+                  <span key={element}><img src={elementArt(element)} alt={ELEMENT_NAME[element]} />{value}</span>)}</span>}
+                {me?.canTransmute && <span className="ss-op-divider" />}
+                <button
+                  type="button"
+                  className="ss-op-action ss-op-primary"
+                  disabled={!canPlay}
+                  onClick={() => send({ type: 'end-turn' })}
+                >
+                  结束回合
+                </button>
+              </>
+            ) : (
+              <b>
+                {game.phase === 'draft'
+                  ? `轮抽 · 第 ${game.draftRound + 1} / 9 轮`
+                  : game.phase === 'organize'
+                    ? `组牌 · 剩余 ${handCards.length} 张`
+                    : game.phase === 'ended'
+                      ? '对局结束'
+                      : ''}
+              </b>
+            )}
+          </div>);
   return (
-    <div className="ss-board">
-      <header className="ss-band ss-band-top ss-topbar">
-        <span key={game.phase} className={`ss-phase ss-phase-${game.phase} ss-phase-pop`}>
-          {PHASE_NAME[game.phase] ?? game.phase}
-        </span>
-        {!me && <span className="ss-spectator-chip">观战</span>}
-        {spectating && (
-          <button
-            type="button"
-            className={`ss-follow-chip${following ? ' ss-follow-on' : ''}`}
-            onClick={() => {
-              if (following) {
-                setFollowing(false);
-                return;
-              }
-              followedSeat.current = null;
-              setFollowing(true);
-            }}
-            title="观战时会自动滚动到当前行动者；手动滚动会暂停跟随"
-          >
-            {following
-              ? `跟随中${activeSeat !== null ? ` · 座位 ${activeSeat + 1}` : ''}`
-              : '已暂停跟随 · 点此恢复'}
-          </button>
-        )}
-        <span className="ss-meta">
-          第 {game.year} 年 · {game.season?.name ?? '筹备中'} · 第 {game.month + 1} 月
-        </span>
-        <span className="ss-counts">
-          <CardPile count={game.deckCount} label="牌堆" kind="deck" />
-          <CardPile count={game.discardCount} label="弃牌" kind="discard" />
-        </span>
-        <button
-          type="button"
-          className="ss-button ss-button-ghost ss-glossary-open"
-          onClick={() => setGlossary(true)}
+    <CardInspection inspect={(id, anchor) => inspect({ i: id, u: -id }, anchor.x, anchor.y)}>
+    <div
+      className="ss-shell"
+      style={{
+        ...(boardArt ? { '--ss-board': `url("${boardArt}")` } : {}),
+        ...(yearIcons ? { '--ss-year-image': `url("${yearIcons}")` } : {}),
+      } as CSSProperties}
+    >
+      <div className="ss-stage">
+        <main
+          className="ss-table"
+          style={{
+            ...(boardArt ? { '--ss-board': `url("${boardArt}")` } : {}),
+            ...(yearIcons ? { '--ss-year-image': `url("${yearIcons}")` } : {}),
+          } as CSSProperties}
         >
-          术语
-        </button>
-      </header>
+          <div className="ss-table-top">
+            <section className="ss-wheel" aria-label="季节轮">
+              <img src={tableArt('season-wheel')} alt="" draggable={false} />
+              <span className="ss-month-cube" style={markerStyle} title={`第 ${game.month + 1} 月`} />
+              <span
+                className={`ss-year-highlight ss-year-highlight-${game.year}`}
+                style={yearStyle}
+                aria-label={`第 ${game.year} 年`}
+              />
+            </section>
+            <section className="ss-center">
+              <div className="ss-table-status"><strong>四季物语</strong>
+                <span>{game.phase === 'play' ? `第 ${game.year} 年 · ${game.season?.name ?? ''}` : game.phase === 'draft' ? '轮抽' : '组牌'}</span>
+                <span>牌堆 {game.deckCount} · 弃牌 {game.discardCount}</span>
+                {mySeat === null && <label><input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />跟随当前玩家</label>}
+                <button type="button" className="ss-icon-button" aria-label="术语与骰面图例" title="术语与骰面图例" onClick={() => setGlossary(true)}>?</button>
+              </div>
+              <section className="ss-dice-panel" aria-label={game.phase === 'play' ? '季节骰' : '轮抽候选'}>
+                {game.phase === 'play' ? (
+                  game.dice.map((die, index) => {
+                    const art = dieArt(die.letter, die.id, die.face);
+                    const pickable = canPickDie && die.pickedBy === null;
+                    return (
+                      <button
+                        type="button"
+                        key={die.id}
+                        className={`ss-die ss-die-${die.letter}${die.pickedBy !== null ? ' ss-die-picked' : ''}`}
+                        disabled={!pickable}
+                        onClick={() => send({ type: 'draft-dice', dieIndex: index })}
+                        aria-label={
+                          die.rewards.summon
+                            ? '召唤等级 +1 骰子'
+                            : die.rewards.card
+                              ? '抽牌骰子'
+                              : `骰子 ${die.letter.toUpperCase()}`
+                        }
+                      >
+                        {art ? (
+                          <img src={art} alt="" draggable={false} />
+                        ) : (
+                          <span className="ss-die-fallback">
+                            {die.rewards.summon ? (
+                              <b aria-label="召唤等级 +1">✦+1</b>
+                            ) : die.rewards.card ? (
+                              <b aria-label="抽牌">▣</b>
+                            ) : (
+                              ELEMENTS.filter((element) => (die.rewards[element] ?? 0) > 0).map(
+                                (element) => (
+                                  <img
+                                    key={element}
+                                    src={elementArt(element)}
+                                    alt={ELEMENT_NAME[element]}
+                                    draggable={false}
+                                  />
+                                ),
+                              )
+                            )}
+                          </span>
+                        )}
+                        {die.pickedBy !== null && (
+                          <span className="ss-die-picked-mark" aria-hidden>
+                            已选
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <>
+                    {visibleDrafted.map((card) => (
+                      <div className="ss-picked-card" key={card.u}>
+                        <CardFace card={card} disabled onInspect={inspect} />
+                      </div>
+                    ))}
+                    {!visibleDrafted.length && (
+                      <span className="ss-empty-copy">
+                        {game.phase === 'draft' ? `已选 ${visibleDrafted.length} 张 · 等待其他玩家` : '组牌'}
+                      </span>
+                    )}
+                  </>
+                )}
+              </section>
 
-      {turnToast && (
-        <div className="ss-turn-toast" role="status">
-          轮到你了
-        </div>
-      )}
+              {(game.otusPool?.length ?? 0) > 0 && <div className="ss-otus-pool" aria-label="猫头鹰贤者中央牌">
+                {game.otusPool!.map((card) => <TableCard key={card.u} card={card}
+                  disabled={!canPlay || (game.otusUsedThisRound?.[mySeat!] ?? 0) > 0}
+                  onClick={() => summon(card, true)} />)}
+              </div>}
+            </section>
 
-      {banner && (
-        <div key={banner.key} className={`ss-banner ss-banner-${banner.t}`} role="status">
-          {banner.msg}
-          {bannerQueue.length > 1 && <span className="ss-banner-queue">+{bannerQueue.length - 1}</span>}
-        </div>
-      )}
-
-      {game.pendingChoice && game.pendingChoice.choosingSeat !== mySeat && (
-        <p className="ss-wait">
-          等待 座位 {game.pendingChoice.choosingSeat + 1} 完成选择
-          {typeof game.pendingChoice.options.title === 'string'
-            ? `：${game.pendingChoice.options.title}`
-            : ''}
-        </p>
-      )}
-      {game.pendingQueueCount > 0 && (
-        <p className="ss-queue-hint">之后还有 {game.pendingQueueCount} 个选择将按序处理。</p>
-      )}
-
-      <div className="ss-band ss-band-mid">
-        <DicePool game={game} canAct={canAct} onSend={send} onHelp={() => setGlossary(true)} />
-        <div className="ss-opponents">
-          {opponents.map((player) => (
-            <PlayerBlock
-              key={player.seat}
-              player={player}
-              label={`座位 ${player.seat + 1}`}
-              active={
-                game.phase === 'draft'
-                  ? player.seat === game.currentPicker
-                  : game.turnOwner === player.seat
-              }
-              compact
-              highlightUids={fresh.get(player.seat)}
-              float={floats.get(player.seat)}
-              onInspect={setInspecting}
-            />
-          ))}
-        </div>
+          </div>
+          <section className="ss-hand" aria-label="手牌">
+                <header>
+                  <b>{game.phase === 'draft' ? '轮抽手牌' : game.phase === 'organize' ? '组牌' : '你的手牌'}</b>
+                  <small>
+                    {game.pendingChoice?.key === 'die_draw'
+                      ? `抽牌候选 ${drawDecision?.cards.length ?? 0} 张`
+                      : `手牌 ${handCards.length}`}
+                  </small>
+                  {game.phase === 'play' && <select aria-label="手牌类型" value={handFilter} onChange={(event) => setHandFilter(event.target.value)}>
+                    <option value="all">全部类型</option><option value="magic_item">魔器</option><option value="familiar">神仆</option>
+                  </select>}
+                  {game.phase === 'play' && <select aria-label="手牌排序" value={handSort} onChange={(event) => setHandSort(event.target.value)}>
+                    <option value="default">原始顺序</option><option value="cost">按费用</option><option value="type">按类型</option>
+                  </select>}
+                </header>
+                <div className="ss-hand-track" style={handStyle}>
+                   {game.pendingChoice?.key === 'die_draw' && <div className="ss-draw-candidates">
+                     {(drawDecision?.cards ?? []).map((card) => (
+                      <CardFace
+                        key={`draw-${card.u}`}
+                        card={card}
+                        selected={draftKeep?.u === card.u}
+                        disabled={!isMyPendingChoice}
+                        onClick={() => isMyPendingChoice && setDraftKeep(card)}
+                        onInspect={inspect}
+                      />
+                     ))}</div>}
+                  {sortedHand.map((card) => {
+                    const canChooseHand =
+                      me?.badgeDraw || game.pendingChoice?.key === 'die_draw'
+                        ? false
+                        : game.phase === 'draft'
+                          ? canPickDraft
+                          : game.phase === 'organize'
+                            ? canOrganize
+                            : canPlay;
+                    return (
+                      <CardFace
+                        key={card.u}
+                        card={card}
+                        selected={
+                          game.pendingChoice?.key === 'die_draw' ? false : organizePicked.includes(card.u)
+                        }
+                        disabled={!canChooseHand}
+                        onClick={canChooseHand
+                          ? () => {
+                              if (game.phase === 'draft') send({ type: 'draft-pick', cardUid: card.u });
+                              else if (game.phase === 'organize') organize(card);
+                              else summon(card);
+                            }
+                          : undefined}
+                        onInspect={inspect}
+                      />
+                    );
+                  })}
+                </div>
+                 {game.phase === 'organize' && me && <div className="ss-organize-preview">
+                   <div className="ss-organize-controls">
+                     <b>第 {(me.organizeYear1?.length ?? 0) === 3 ? 2 : 1} 年 · 已选 {organizePicked.length}/3</b>
+                     <button type="button" className="ss-button" disabled={!canOrganize || organizePicked.length !== 3}
+                       onClick={() => { send({ type: 'organize', cardUids: organizePicked as [number, number, number] }); setOrganizePicked([]); }}>确认分组</button>
+                     <button type="button" className="ss-button" disabled={!canOrganize}
+                       onClick={() => { setOrganizePicked([]); send({ type: 'organize-reset' }); }}>重置</button>
+                   </div>
+                   {[organizedYear1, organizedYear2, (me.organizeYear2?.length ?? 0) === 3 ? visibleDrafted.map((card) => card.u) : []].map((uids, index) =>
+                     <div className="ss-year-preview" key={index}><b>{['I', 'II', 'III'][index]}</b>
+                       {uids.map((uid) => <TableCard key={uid} card={me.drafted?.find((card) => card.u === uid) ?? { u: uid, i: 0 }} disabled />)}
+                     </div>)}
+                 </div>}
+                 {(drawDecision || me?.badgeDraw) && (
+                  <div className="ss-keep-actions" role="group" aria-label="选择保留的抽牌">
+                    <button
+                      type="button"
+                      className="ss-op-action ss-op-primary"
+                      disabled={!draftKeep || !(drawDecision?.cards ?? me?.badgeDraw ?? []).some((card) => card.u === draftKeep.u)}
+                      onClick={() => {
+                        if (!draftKeep) return;
+                        if (me?.badgeDraw) {
+                          send({ type: 'badge-keep', cardUid: draftKeep.u });
+                        } else if (game.pendingChoice?.key === 'die_draw') {
+                          send({
+                            type: 'resolve-choice',
+                            choice: [draftKeep.u],
+                          });
+                        }
+                        setDrawDecision(null);
+                        setDraftKeep(null);
+                      }}
+                    >
+                      {drawDecision?.keep === 1 ? '保留此牌' : '保留所选'}
+                    </button>
+                    {game.pendingChoice?.key === 'die_draw' && (
+                      <button
+                        type="button"
+                        className="ss-op-action"
+                        onClick={() => {
+                          cancelAction();
+                          setDrawDecision(null);
+                          setDraftKeep(null);
+                          send({ type: 'resolve-choice', choice: [] });
+                        }}
+                      >
+                        全部弃置
+                      </button>
+                    )}
+                  </div>
+                )}
+              </section>
+<div className="ss-player-board">
+            {[...game.players]
+              .sort((left, right) => Number(right.seat === mySeat) - Number(left.seat === mySeat))
+              .map((player) => (
+              <section
+                className={`ss-player-row${player.seat === mySeat ? ' ss-player-row-me' : ''}`}
+                data-player-seat={player.seat}
+                key={player.seat}
+              >
+                <PlayerIdentity
+                  player={player.seat === mySeat && game.pendingChoice?.kind === 'energy_swap' && isMyPendingChoice
+                    ? { ...player, energies: Object.fromEntries(ELEMENTS.map((element) =>
+                      [element, Number((game.pendingChoice!.options.current as Partial<Record<Element, number>>)?.[element] ?? player.energies[element]) +
+                        Number((game.pendingChoice!.options.incoming as Partial<Record<Element, number>>)?.[element] ?? 0)])) as Record<Element, number> }
+                    : player}
+                  name={playerName(view, player.seat)}
+                  isMe={player.seat === mySeat}
+                   canAct={player.seat === mySeat && canPlay}
+                    drawUpgrade={player.seat === mySeat && game.pendingChoice?.key === 'die_draw' && isMyPendingChoice &&
+                      game.dice.some((die) => die.pickedBy === mySeat && die.rewards.card)}
+                  selectedDice={game.phase === 'play'
+                    ? game.dice.filter((die) => die.pickedBy === player.seat)
+                    : []}
+                  onBadge={badgeAction}
+                  onInspect={inspect}
+                  onSend={send}
+                  payment={player.seat === mySeat ? actionPayment : []}
+                   paying={player.seat === mySeat && !!paymentRequirement}
+                  onSource={toggleActionPayment}
+                  reserveOnly={!!paymentRequirement?.reserveOnly ||
+                    ['horn_of_plenty', 'fairy_monolith_store', 'chalice_of_eternity_store'].includes(game.pendingChoice?.key ?? '')}
+                />
+                <div className="ss-player-field">
+                   {player.seat === mySeat ? actionBar : null}
+                 <div className="ss-summon-slots" aria-label={`${playerName(view, player.seat)} 的场牌，每行最多 10 张`}>
+                  {player.played.length === 0 && player.gauge === 0 && (
+                    <span className="ss-field-empty">尚未召唤</span>
+                  )}
+                  {player.played.map((card) => (
+                    <div className="ss-summon-slot ss-summon-filled" key={card.u}>
+                      <CardFace
+                        card={card}
+                        reserve={card.stored}
+                        disabled={player.seat !== mySeat || !canPlay || !isActivatable(card.i) || card.used || !!card.lockedBy}
+                        onClick={player.seat === mySeat && canPlay && isActivatable(card.i) && !card.used && !card.lockedBy
+                          ? () => activate(card)
+                          : undefined}
+                        onInspect={inspect}
+                      />
+                    </div>
+                  ))}
+                  {Array.from(
+                    { length: Math.max(0, player.gauge - player.played.length) },
+                    (_, index) => (
+                      <span className="ss-summon-slot" key={`empty-${index}`} aria-label="空召唤位" />
+                    ),
+                  )}
+                </div>
+                </div>
+              </section>
+              ))}
+          </div>
+        </main>
+        <LogPanel game={game} formatMessage={logText} />
       </div>
-
-      <div className="ss-band ss-band-bottom">
-        {me ? (
-          <PlayerBlock
-            player={me}
-            label={`座位 ${me.seat + 1}`}
-            active={game.myTurn}
-            highlightUids={fresh.get(me.seat)}
-            float={floats.get(me.seat)}
-            onPlayedClick={canAct ? (uid) => send({ type: 'activate', cardUid: uid }) : undefined}
-            onInspect={setInspecting}
-          />
-        ) : (
-          <div className="ss-spectator">
-            <p className="ss-muted">观战模式 · 你看不到任何人的手牌</p>
-            <div className="ss-spectator-grid">
-              {game.players.map((player) => (
-                <PlayerBlock
-                  key={player.seat}
-                  player={player}
-                  label={`座位 ${player.seat + 1}`}
-                  active={
-                    game.phase === 'draft'
-                      ? player.seat === game.currentPicker
-                      : game.turnOwner === player.seat
-                  }
-                  highlightUids={fresh.get(player.seat)}
-                  float={floats.get(player.seat)}
-                  onInspect={setInspecting}
-                  elementRef={refForSeat(player.seat)}
+      {detailOpen && hovered && (
+        <InspectionDetail cardId={hovered.i} anchor={hoverPos} onClose={closeDetail} />
+      )}
+      {game.phase === 'ended' && game.result && (
+        <ResultScreen game={game} mySeat={mySeat} playerName={(seat) => playerName(view, seat)} />
+      )}
+      {glossary && <Glossary onClose={() => setGlossary(false)} />}
+      {me && me.badgeDraw && me.badgeDraw.length > 0 && (
+        <div className="ss-modal-backdrop" role="presentation">
+          <div className="ss-modal" role="dialog" aria-modal="true">
+            <h3>选择保留的牌</h3>
+            <div className="ss-badge-keep-row">
+              {me.badgeDraw.map((card) => (
+                <CardFace
+                  key={card.u}
+                  card={card}
+                  onClick={() => send({ type: 'badge-keep', cardUid: card.u })}
+                  onInspect={inspect}
                 />
               ))}
             </div>
           </div>
-        )}
-        {me && <PlayActions game={game} player={me} canAct={canAct} onSend={send} />}
-        {me && <ActionHints game={game} player={me} canAct={canAct} />}
-        {me && game.phase === 'play' && <BadgeBar player={me} canAct={canAct} onSend={send} />}
-        {me && (
-          <MyZone
-            player={me}
-            game={game}
-            canAct={canAct}
-            onSend={send}
-            onFlexSummon={(uid) => {
-              const card = me?.hand?.find((item) => item.u === uid);
-              if (card) setPaying({ uid, cardId: card.i });
-            }}
-            onSelectSummon={(uid, cardId) => setConfirming({ uid, cardId })}
-            onInspect={setInspecting}
-          />
-        )}
-        {me && paying && (
-          <PaymentModal
-            key={paying.uid}
-            cardId={paying.cardId}
-            player={me}
-            onCancel={() => setPaying(null)}
-            onConfirm={(paid) => {
-              const uid = paying.uid;
-              setPaying(null);
-              send({ type: 'summon', cardUid: uid, paidElements: paid });
-            }}
-          />
-        )}
-        {me && confirming && me.hand?.some((card) => card.u === confirming.uid) && (
-          <SummonConfirm
-            cardId={confirming.cardId}
-            player={me}
-            playerCount={game.players.length}
-            onCancel={() => setConfirming(null)}
-            onConfirm={() => {
-              const uid = confirming.uid;
-              setConfirming(null);
-              send({ type: 'summon', cardUid: uid });
-            }}
-          />
-        )}
-        {onboarding && (
-          <Onboarding
-            onClose={() => {
-              markOnboardingDone();
-              setOnboarding(false);
-            }}
-          />
-        )}
-        {glossary && <Glossary onClose={() => setGlossary(false)} />}
-        {inspecting !== null && (
-          <CardDetail cardId={inspecting} onClose={() => setInspecting(null)} />
-        )}
-        <ResultScreen game={game} mySeat={me?.seat ?? null} />
-      </div>
-
-      {me && hasChoice && game.pendingChoice?.choosingSeat === me.seat && (
-        <ChoiceModal game={game} mySeat={me.seat} onSend={send} />
+        </div>
       )}
-
-      {me && hasBadgeDraw && (
-        <BadgeKeepModal
-          cards={me.badgeDraw ?? []}
-          onKeep={(uid) => send({ type: 'badge-keep', cardUid: uid })}
-        />
-      )}
-
-      <LogPanel game={game} />
     </div>
+    </CardInspection>
   );
 }

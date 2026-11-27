@@ -43,6 +43,30 @@ export const seasonsCatalog: GameCatalog = {
         { value: 'dice_season', label: '骰子季节（100 张恶意之骰）' },
       ],
     },
+    {
+      id: 'extensions',
+      label: '扩展包',
+      type: 'multi',
+      description: '基础 50 张必选；两个扩展各追加 20 种卡牌，可叠加选用。',
+      default: ['base'],
+      choices: [
+        {
+          value: 'base',
+          label: '基础 50 张',
+          description: '必选。关闭后无法开局。',
+        },
+        {
+          value: 'ext1',
+          label: '魔法王国（+20 张）',
+          description: '追加 20 种“魔法王国”卡牌及其效果。',
+        },
+        {
+          value: 'ext2',
+          label: '命运之路（+20 张）',
+          description: '追加 20 种“命运之路”卡牌及其效果。',
+        },
+      ],
+    },
   ],
 };
 
@@ -53,6 +77,7 @@ export type SeasonsPool = 'standard' | 'five_fortunes' | 'dice_season';
 export const seasonsOptionsSchema = z
   .object({
     pool: z.enum(['standard', 'five_fortunes', 'dice_season']).optional(),
+    extensions: z.array(z.enum(['base', 'ext1', 'ext2'])).optional(),
     /**
      * 自定义卡池：逗号分隔的卡牌 id（每种仍按 2 张入池）。
      * 不暴露在房间创建界面（仅供脚本/压力测试直接调用引擎时使用）；
@@ -80,6 +105,23 @@ export const seasonsDefaultOptions: SeasonsOptions = { pool: 'standard' };
 export type Element = 'water' | 'air' | 'fire' | 'earth';
 
 export const ELEMENTS = ['water', 'air', 'fire', 'earth'] as const;
+
+/**
+ * 一次元素支付的稳定来源。
+ *
+ * - `reserve`：玩家储备区中的一枚；
+ * - `card`：场上某张允许作为储备的卡（流水护符等）上的一枚。
+ *
+ * `slot` 是同一来源内该元素的获得顺序。它只在一次待支付会话内
+ * 标识“哪一枚”，不会跨回合或跨刷新保留。旧客户端仍可发送只含
+ * 元素种类的 `paidElements`，服务端会按“储备优先”兼容解析。
+ */
+export interface SeasonsElementSource {
+  element: Element;
+  source: 'reserve' | 'card';
+  cardUid?: number;
+  slot?: number;
+}
 
 export type SeasonsPhase = 'draft' | 'organize' | 'play' | 'ended';
 
@@ -160,6 +202,7 @@ export interface SeasonsCardDef {
   effect?: SeasonsCardEffect | null;
   desc: string;
   descEn?: string;
+  extension?: 'base' | 'ext1' | 'ext2';
 }
 
 /* ------------------------------------------------------------------ */
@@ -190,21 +233,38 @@ export type SeasonsAction =
   /** 组牌：撤回已选的两步（尚未确认完成时） */
   | { type: 'organize-reset' }
   /** 徽章 1：把 2 个储备能量换成任意 2 个能量 */
-  | { type: 'use-badge'; badgeType: 1; fromElements: [Element, Element]; toElements: [Element, Element] }
-  /** 徽章 2：把 1 个能量换成水晶（当前季节转换值 + 1） */
-  | { type: 'use-badge'; badgeType: 2; element: Element }
-  /** 徽章 3：召唤等级 +1；徽章 4：抽卡效果永久升级为摸 2 选 1 */
-  | { type: 'use-badge'; badgeType: 3 | 4 }
+  | { type: 'use-badge'; badgeType: 1; fromElements: [Element, Element]; toElements: [Element, Element]; paidSources?: SeasonsElementSource[] }
+  /** 徽章 2：本行动轮获得晶化权，每枚晶化元素额外 +1（可叠加） */
+  | { type: 'use-badge'; badgeType: 2; element?: Element }
+  /** 徽章 3：召唤等级 +1；徽章 4：本次带抽牌图标的季节骰摸 2 选 1 */
+  | { type: 'use-badge'; badgeType: 3 }
+  | { type: 'use-badge'; badgeType: 4; dieId: number }
   /** 徽章 4 抽到 2 张时，选择保留哪一张 */
   | { type: 'badge-keep'; cardUid: number }
   /** 选骰：挑一颗尚未被选的骰子 */
   | { type: 'draft-dice'; dieIndex: number }
+  /** 坚定骰子：放弃季节骰行动，选择一项替代行动 */
+  | { type: 'steadfast'; mode: 'gauge' | 'energy' | 'transmute' | 'skip' }
   /** 召唤手牌；paidElements 只对灵活费用卡有意义 */
-  | { type: 'summon'; cardUid: number; paidElements?: Element[] }
+  | {
+      type: 'summon';
+      cardUid: number;
+      /** @deprecated Prefer paidSources; retained for old clients. */
+      paidElements?: Element[];
+      paidSources?: SeasonsElementSource[];
+    }
+  /** 猫头鹰中央候选：正常支付费用召唤 */
+  | {
+      type: 'summon-otus';
+      cardUid: number;
+      /** @deprecated Prefer paidSources; retained for old clients. */
+      paidElements?: Element[];
+      paidSources?: SeasonsElementSource[];
+    }
   /** 激活场上一张牌；多激活卡用 abilityKey 指定能力 */
-  | { type: 'activate'; cardUid: number; abilityKey?: string }
+  | { type: 'activate'; cardUid: number; abilityKey?: string; paidSources?: SeasonsElementSource[] }
   /** 转换 1 个能量为水晶 */
-  | { type: 'transmute'; element: Element }
+  | { type: 'transmute'; element: Element; paidSources?: SeasonsElementSource[] }
   | { type: 'end-turn' }
   /**
    * 回应选择弹窗。形状由 pendingChoice.kind 决定；协议层只校验外壳，
@@ -216,22 +276,34 @@ export type SeasonsAction =
 
 const elementSchema = z.enum(['water', 'air', 'fire', 'earth']);
 const cardUidSchema = z.number().int().positive();
+const elementSourceSchema = z.object({
+  element: elementSchema,
+  source: z.enum(['reserve', 'card']),
+  cardUid: cardUidSchema.optional(),
+  slot: z.number().int().min(0).optional(),
+});
 
 const badgeSchema = z.union([
   z.object({
     type: z.literal('use-badge'),
     badgeType: z.literal(1),
     fromElements: z.tuple([elementSchema, elementSchema]),
+    paidSources: z.array(elementSourceSchema).length(2).optional(),
     toElements: z.tuple([elementSchema, elementSchema]),
   }),
   z.object({
     type: z.literal('use-badge'),
     badgeType: z.literal(2),
-    element: elementSchema,
+    element: elementSchema.optional(),
   }),
   z.object({
     type: z.literal('use-badge'),
-    badgeType: z.union([z.literal(3), z.literal(4)]),
+    badgeType: z.literal(3),
+  }),
+  z.object({
+    type: z.literal('use-badge'),
+    badgeType: z.literal(4),
+    dieId: z.number().int().positive(),
   }),
 ]);
 
@@ -249,16 +321,29 @@ export const seasonsActionSchema: z.ZodType<SeasonsAction> = z.union([
     dieIndex: z.number().int().min(0).max(7),
   }),
   z.object({
+    type: z.literal('steadfast'),
+    mode: z.enum(['gauge', 'energy', 'transmute', 'skip']),
+  }),
+  z.object({
     type: z.literal('summon'),
     cardUid: cardUidSchema,
     paidElements: z.array(elementSchema).max(4).optional(),
+    paidSources: z.array(elementSourceSchema).max(20).optional(),
+  }),
+  z.object({
+    type: z.literal('summon-otus'),
+    cardUid: cardUidSchema,
+    paidElements: z.array(elementSchema).max(4).optional(),
+    paidSources: z.array(elementSourceSchema).max(20).optional(),
   }),
   z.object({
     type: z.literal('activate'),
     cardUid: cardUidSchema,
     abilityKey: z.string().min(1).max(40).optional(),
+    paidSources: z.array(elementSourceSchema).max(20).optional(),
   }),
-  z.object({ type: z.literal('transmute'), element: elementSchema }),
+  z.object({ type: z.literal('transmute'), element: elementSchema,
+    paidSources: z.array(elementSourceSchema).length(1).optional() }),
   z.object({ type: z.literal('end-turn') }),
   z.object({ type: z.literal('resolve-choice'), choice: z.unknown() }),
   z.object({ type: z.literal('resign') }),
@@ -273,9 +358,22 @@ export const seasonsActionSchema: z.ZodType<SeasonsAction> = z.union([
  * （卡上储存的能量、本回合是否已激活、灵活支付选过的元素）。
  */
 export interface SeasonsCardView extends CardRef {
+  /** Copied effect definition, while i remains the effective rules definition. */
+  copyOf?: number;
+  /** Original face and printed points of a Raven instance. */
+  printedId?: number;
+  /** Instance UID of the copied card, used to clear the copy when it leaves play. */
+  copySourceUid?: number;
   stored?: Partial<Record<Element, number>>;
   used?: boolean;
   paid?: Element[];
+  usedAbilityKeys?: string[];
+  /** Extension card's banked jewel tokens. */
+  jewels?: number;
+  /** Urmian Psychic Cage's one-shot trap is still armed. */
+  trapArmed?: boolean;
+  /** Source UID of an Argosian Tangleweed lock. */
+  lockedBy?: number;
 }
 
 export interface SeasonsPlayerView {
@@ -287,13 +385,32 @@ export interface SeasonsPlayerView {
   played: SeasonsCardView[];
   /** 第 2、3 年牌库合计张数 */
   libraryCount: number;
+  /** 第 2 年牌库张数（公开） */
+  library2Count: number;
+  /** 第 3 年牌库张数（公开） */
+  library3Count: number;
+  /** 第 2 年牌库内容，仅本人可见 */
+  library2: SeasonsCardView[] | null;
+  /** 第 3 年牌库内容，仅本人可见 */
+  library3: SeasonsCardView[] | null;
+  /** Public Otus central candidates. */
+  otusPool?: SeasonsCardView[];
+  /** Public Otus offer restricted to the current actor. */
+  otusOffer?: SeasonsCardView[] | null;
+  /** Remaining Replica cards visible to this player. */
+  replicaSupply?: number;
   energies: Record<Element, number>;
+  jewels?: Partial<Record<Element, number>>;
   crystals: number;
   gauge: number;
-  maxEnergy: number;
   canTransmute: boolean;
+  /** Badge 2 bonus applied to each crystallised token this action round. */
+  transmuteBonus: number;
+  /** Effective reserve capacity after card modifiers (Bespelled Grimoire etc.). */
+  maxEnergy: number;
   badgesUsed: number;
-  badgeDrawUpgrade: boolean;
+  /** 本行动轮已由徽章升级的抽牌骰；null 表示没有。 */
+  badgeDrawDieId: number | null;
   /** 徽章升级后的「摸 2 选 1」待选牌，仅本人可见 */
   badgeDraw: SeasonsCardView[] | null;
   /** 轮抽：本轮是否已经选过牌 */
@@ -308,6 +425,11 @@ export interface SeasonsPlayerView {
   /** 组牌已选的 uid；仅本人可见 */
   organizeYear1: number[] | null;
   organizeYear2: number[] | null;
+  /** 组牌阶段本人可见的待分组牌；其他玩家为 null。 */
+  organizeCards1: SeasonsCardView[] | null;
+  organizeCards2: SeasonsCardView[] | null;
+  /** 组牌阶段尚未分配到年份的牌；仅本人可见。 */
+  organizeRemaining: SeasonsCardView[] | null;
 }
 
 export interface SeasonsDieRewards {
@@ -357,6 +479,7 @@ export interface SeasonsPendingChoiceView {
 }
 
 export interface SeasonsLogEntry {
+  seq?: number;
   t: 'draft' | 'organize' | 'month' | 'summon' | 'activate' | 'transmute' | 'effect' | 'badge' | 'season' | 'choice' | 'score';
   msg: string;
 }
@@ -383,6 +506,9 @@ export interface SeasonsResultView {
 }
 
 export interface SeasonsGameView {
+  rulesVersion?: string;
+  otusPool?: SeasonsCardView[];
+  otusUsedThisRound?: number[];
   phase: SeasonsPhase;
   /** 0–35，0 是第 1 年冬季第 1 月 */
   month: number;

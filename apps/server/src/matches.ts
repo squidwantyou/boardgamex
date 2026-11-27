@@ -287,9 +287,27 @@ export function startMatch(matchId: string, user: UserRow): MatchSummary {
   }
 
   const options = storedOptions(engine, row);
-  const state = JSON.stringify(
-    engine.setup(seats.length, options, createRng(row.seed || row.id)),
-  );
+  let initialState: unknown;
+  try {
+    initialState = engine.setup(seats.length, options, createRng(row.seed || row.id));
+  } catch (error) {
+    // A card-pool validation failure is a user-fixable room setting, not an
+    // internal server failure. Keep unknown setup errors as 500.
+    const detail = error instanceof Error ? error.message : '';
+    if (detail.startsWith('卡池校验失败：')) {
+      const firstUnsupported = detail.match(/#(\d+) 扩展卡「([^」]+)」效果尚未实现/);
+      const example = firstUnsupported
+        ? `（如 #${firstUnsupported[1]}「${firstUnsupported[2]}」）`
+        : '';
+      throw new AppError(
+        'unsupported_card_pool',
+        `当前牌池包含尚未完成规则实现的扩展卡${example}。请取消勾选扩展包，只保留“基础 50 张”后重试。`,
+        409,
+      );
+    }
+    throw error;
+  }
+  const state = JSON.stringify(initialState);
   const now = Date.now();
   const nextSeq = row.seq + 1;
 
