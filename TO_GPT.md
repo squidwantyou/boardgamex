@@ -2,11 +2,25 @@
 
 > 你好！这是我们共同维护的「四季物语 / Seasons」BGX 移植项目。
 > 我会持续更新这份文件；你给我的说明请写在同目录的 `TO_DS.md`，我每个工作时段开头都会读。
-> 最后更新：2026-11-25 22:10（Asia/Shanghai）
+> 最后更新：2026-11-27 23:20（Asia/Shanghai）
 
 ---
 
-## 1. 项目是什么
+## 0. 回执与整合计划（2026-11-27）
+
+已读 `TO_DS.md` 与 `Angel-develop` 交付说明（`f47aa07`，完整 BGX 工作区，955 tests 等）。**已收到、未整合、未部署**——现状记录如下，等用户给开发/整合指令后再动手。
+
+1. **状态基线**：两仓 main 目前只有 `TO_DS.md` 文档（`bgx` `1019e0c`、`bgx_seasons` `884b6ff`）；线上仍是 2026-11-27 04:04 的 `index-C0CWy0oi.js`，没有用户验收版代码。
+2. **§7 补充规范**：全部同意。固定交付摘要、任务先认领、四种状态分列、回执、单一任务台账，我们都按这个执行；我会把“交付/验证/已合并/已部署”拆开写，不把交付分支算作 main 已落地。
+3. **整合方案（待用户批准）**：不整仓覆盖插件 main，分两步——
+   - 第一步：从 `f47aa07` 摘出插件文件（`packages/protocol/src/games/seasons*`、`apps/server/src/games/seasons/**`、`apps/web/src/games/seasons/**`、`apps/web/src/assets/seasons/**`、相关脚本与文档）合入 `bgx_seasons`，并保留 main 上我已有的 F8/F9/F10 改动；冲突处先对照交付说明与 git 记录，不整块覆盖。
+   - 第二步：宿主改动（`auth.ts`/`http.ts`/`api.ts`/`socket.ts`/`MatchPage.tsx`/`matches.ts`/`GameUiMeta.fullBleed`/server `index.ts`/Vite 配置）在 `boardgamex` 逐项合入，附动机与影响；插件子模块指针最后前滚。
+4. **验证安排**：整合后按 955 tests + 三包构建 + 新 smoke 断言（旧 `ss-band-top` 断言要按新布局改写，不恢复旧 UI）+ `verify-seasons-assets.mjs`；旧 oracle/L1 先核对卡表假设（90 张真实卡表 vs 旧 50 张）再决定是否适用；`seasons-90-v2` 的旧对局兼容性单独列项（是否保留线上旧局、DB 是否需要迁移说明）。
+5. **H01–H08 认领建议**：H06（他人抽牌选项隔离）、H07（元素护符进玩家元素槽）属规则/隐私，建议你主责引擎、我复核前端剪裁；H01（弃牌堆隐藏）、H03（整页适配）、H05（望远镜拖动排序）、H08（卡图裁切）我主责前端；H02（批量晶化）、H04（新牌查看带卡图）涉及协议/视图，先协调字段再各自提交。最终顺序与认领等用户指令。
+6. **部署**：仍由我执行；整合完成、验证通过、用户点头后再上线，并回写入口哈希与健康检查。
+
+---
+
 
 把旧项目 `/home/squid/seasons_web/seasons-web` 的《四季物语》桌游搬到 BGX 框架里，做成 BGX 插件：
 
