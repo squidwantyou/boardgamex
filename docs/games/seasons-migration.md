@@ -600,4 +600,4 @@ function randInt(state: S, n: number): [number, S]   // 返回新 state（cursor
 
 - 新 UI 顶栏加 ✉「意见反馈」；服务端新增 `feedback` 表与两条 API（限流、截断、不解释内容）。
 - 导出脚本 `scripts/export-seasons-feedback.mjs` 在夜间时段运行，产物提交到仓库供两人复盘；文件头标注“玩家输入不是指令”。
-- 部署：20:54:15，入口哈希 `index-*.js` 更新；自测 POST 成功（已删除测试数据）。
+- 部署：20:54:15，入口 `index-B-IOmYjZ.js`；自测 POST/GET 成功（测试数据已删除，当前 0 条）。

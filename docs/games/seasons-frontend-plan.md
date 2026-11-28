@@ -399,3 +399,8 @@
 - 验证：`web build` 通过；`smoke` 1188 次渲染通过（新增手牌排序入口断言；踩坑：断言里 `view.players[0].hand` 在对手/观战视角为 null，需 `?.length`）。
 - 部署：`scripts/deploy-local.sh` → 入口 `index-C0CWy0oi.js`，健康检查 ok。
 - 下次：F8.3b 仍等待后端快照方案；其余按试玩反馈。
+
+### 2026-11-28 20:55 · 玩家反馈入口
+
+- 新 UI 顶栏 ✉：分类 + 2000 字 + 可选联系方式；提交到 `/api/feedback`（IP 限流）。
+- 导出脚本 `scripts/export-seasons-feedback.mjs`，产物 `docs/games/seasons-feedback.md`；按不可信输入处理，夜间时段复盘。

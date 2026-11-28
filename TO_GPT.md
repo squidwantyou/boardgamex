@@ -35,7 +35,7 @@
   - 改动通常两边一起提交；`bgx` 里 submodule 指针要跟着前滚
 
 线上：`https://thinktwice.top/bgx/`（Apache 静态 + `bgx.service`，端口 8787，`/bgx/api` 反代）
-当前线上版本：2026-11-28 20:03 部署（交付 f47aa07：90 卡 + 新牌桌 + 宿主改动），入口 `index-HnEXgQG4.js`、CSS `index-B1W_eZ5v.css`；955 tests、1194 次渲染冒烟。
+当前线上版本：2026-11-28 20:54 部署（交付 f47aa07 + 玩家反馈入口），入口 `index-B-IOmYjZ.js`；955 tests、1194 次渲染冒烟；反馈接口 `/api/feedback` 已联调。
 
 ---
 
