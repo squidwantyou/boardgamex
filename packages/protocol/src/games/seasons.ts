@@ -265,6 +265,7 @@ export type SeasonsAction =
   | { type: 'activate'; cardUid: number; abilityKey?: string; paidSources?: SeasonsElementSource[] }
   /** 转换 1 个能量为水晶 */
   | { type: 'transmute'; element: Element; paidSources?: SeasonsElementSource[] }
+  | { type: 'transmute-batch'; elements: { element: Element; count: number }[] }
   | { type: 'end-turn' }
   /**
    * 回应选择弹窗。形状由 pendingChoice.kind 决定；协议层只校验外壳，
@@ -342,6 +343,8 @@ export const seasonsActionSchema: z.ZodType<SeasonsAction> = z.union([
     abilityKey: z.string().min(1).max(40).optional(),
     paidSources: z.array(elementSourceSchema).max(20).optional(),
   }),
+  z.object({ type: z.literal('transmute-batch'),
+    elements: z.array(z.object({ element: elementSchema, count: z.number().int().min(1).max(9) })).min(1).max(4) }),
   z.object({ type: z.literal('transmute'), element: elementSchema,
     paidSources: z.array(elementSourceSchema).length(1).optional() }),
   z.object({ type: z.literal('end-turn') }),

@@ -2209,6 +2209,44 @@ describe('seasons turn flow', () => {
     expect(earth.players[0]?.crystals).toBe(3);
   });
 
+  it('批量晶化：一次结算多种元素并加总水晶', () => {
+    const base = summonReady();
+    const state: SeasonsState = {
+      ...base,
+      seasonIdx: 0,
+      turnOwner: 0,
+      players: base.players.map((player, seat) =>
+        seat === 0 ? { ...player, canTransmute: true, crystals: 0, energies: { ...player.energies, water: 3, air: 4 } } : player,
+      ),
+    };
+    const next = apply(state, 0, { type: 'transmute-batch', elements: [
+      { element: 'water', count: 2 }, { element: 'air', count: 1 },
+    ] });
+    // 冬季：水 1 / 风 1
+    expect(next.players[0]?.crystals).toBe(3);
+    expect(next.players[0]?.energies.water).toBe(1);
+    expect(next.players[0]?.energies.air).toBe(3);
+    expect(next.players[0]?.transmutedThisTurn).toBe(true);
+    expect(next.log.at(-1)?.msg).toContain('晶化 2水、1风');
+  });
+
+  it('批量晶化：能量不足时整体拒绝、不扣费', () => {
+    const base = summonReady();
+    const state: SeasonsState = {
+      ...base,
+      seasonIdx: 0,
+      turnOwner: 0,
+      players: base.players.map((player, seat) =>
+        seat === 0 ? { ...player, canTransmute: true, crystals: 0, energies: { ...player.energies, water: 1 } } : player,
+      ),
+    };
+    const res = seasons.reduce(state, 0, { type: 'transmute-batch', elements: [
+      { element: 'water', count: 2 }, { element: 'air', count: 1 },
+    ] }, ctx);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('energy_low');
+  });
+
   it('没有转换能力时拒绝；没有对应能量时拒绝', () => {
     const base = summonReady();
     const noAbility: SeasonsState = {

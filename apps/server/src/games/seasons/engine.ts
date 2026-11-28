@@ -4111,6 +4111,72 @@ function transmute(
   };
 }
 
+function transmuteBatch(
+  state: SeasonsState,
+  seat: number,
+  elements: { element: Element; count: number }[],
+): ReduceResult<SeasonsState> {
+  if (state.phase !== 'play') return fail('wrong_phase', '当前不是行动阶段');
+  if (state.turnOwner !== seat) return fail('not_your_turn', '还没轮到你行动');
+  const me = state.players[seat];
+  if (!me) return fail('bad_seat', '座位不存在');
+  const pickedDie = state.season?.dice.find((item) => item.pickedBy === seat);
+  const hasTransmuter = me.played.some(
+    (item) => !lockedOut(me, item) && cardById(item.i)?.effect?.typeKey === 'transmute_on_crystal_die',
+  );
+  if (!me.canTransmute && !(hasTransmuter && (pickedDie?.rewards.crystals ?? 0) > 0)) {
+    return fail('no_transmute', '本回合没有转换能力');
+  }
+  if (elements.length === 0) return fail('invalid_choice', '至少选择 1 个能量');
+  const seen = new Set<Element>();
+  for (const entry of elements) {
+    if (seen.has(entry.element)) return fail('invalid_choice', '同一种元素只能选择一次');
+    seen.add(entry.element);
+    if (!Number.isInteger(entry.count) || entry.count < 1) return fail('invalid_choice', '数量必须是正整数');
+    if (reserveElementCount(me, entry.element) < entry.count) {
+      return fail('energy_low', `可用的${ELEMENT_NAME_ZH[entry.element]}能量不足`);
+    }
+  }
+  let bonus = 0;
+  for (const card of me.played) {
+    if (lockedOut(me, card)) continue;
+    const def = cardById(card.i);
+    if (def) bonus += abilityAmount(def, 'transmute_bonus');
+  }
+  let player: SeasonsPlayerState = me;
+  let crystals = 0;
+  const parts: string[] = [];
+  for (const entry of elements) {
+    const value = (TRANSMUTE_VALUE[entry.element][seasonIndexForMonth(state.month)] ?? 0) + bonus + me.transmuteBonus;
+    crystals += value * entry.count;
+    const nextPlayer = takeElementEnergy(player, entry.element, entry.count);
+    if (!nextPlayer) return fail('energy_low', `没有可用的${ELEMENT_NAME_ZH[entry.element]}能量`);
+    player = nextPlayer;
+    parts.push(`${entry.count}${ELEMENT_NAME_ZH[entry.element]}`);
+  }
+  const players = state.players.map((item) =>
+    item.seat === seat
+      ? {
+          ...item,
+          energies: player.energies,
+          played: player.played,
+          crystals: crystalsAfterGain(item, crystals),
+          transmutedThisTurn: true,
+        }
+      : item,
+  );
+  return {
+    ok: true,
+    state: {
+      ...state,
+      players,
+      log: pushLog(state.log, 'transmute',
+        `${seatName(seat)} 晶化 ${parts.join('、')} → ${crystals} 水晶${bonus > 0 ? `（加成 +${bonus}）` : ''}`),
+    },
+    events: [],
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* 结束回合 / 月份与年份推进                                           */
 /* ------------------------------------------------------------------ */
@@ -5929,6 +5995,8 @@ export const seasons: GameEngine<
         return finish(state, resolveChoice(state, seat, action.choice));
       case 'transmute':
         return finish(state, transmute(state, seat, action.element, action.paidSources));
+      case 'transmute-batch':
+        return finish(state, transmuteBatch(state, seat, action.elements));
       case 'end-turn':
         if (state.pendingChoice?.key === 'die_draw') {
           const dropped = state.pendingCards ?? [];

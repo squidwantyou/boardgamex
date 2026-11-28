@@ -298,6 +298,7 @@ export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProp
     | null
   >(null);
   const [actionPayment, setActionPayment] = useState<SeasonsElementSource[]>([]);
+  const [batchPick, setBatchPick] = useState<Partial<Record<Element, number>> | null>(null);
   const [actionReceived, setActionReceived] = useState<Element[]>([]);
   const [draftKeep, setDraftKeep] = useState<SeasonsCardView | null>(null);
   const [drawDecision, setDrawDecision] = useState<DrawDecision | null>(null);
@@ -559,6 +560,7 @@ export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProp
     );
   };
   const cancelAction = () => {
+    setBatchPick(null);
     setActionStage(null);
     setAbilityCard(null);
     setActionPayment([]);
@@ -749,13 +751,50 @@ export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProp
                      paidSources={actionPayment} payTokens={!!paymentRequirement} />
             ) : game.phase === 'play' ? (
               <>
+                {batchPick && me && (
+                  <div className="ss-batch">
+                    {ELEMENTS.map((element) => {
+                      const max = me.energies?.[element] ?? 0;
+                      const value = game.transmuteValues.find((item) => item.element === element)?.value ?? 0;
+                      const count = batchPick[element] ?? 0;
+                      return (
+                        <span className="ss-batch-item" key={element}>
+                          <button type="button" className="ss-batch-step" aria-label={`减少${ELEMENT_NAME[element]}`}
+                            disabled={count === 0} onClick={() => setBatchPick({ ...batchPick, [element]: count - 1 })}>−</button>
+                          <span className="ss-batch-count">
+                            <img src={elementArt(element)} alt={ELEMENT_NAME[element]} />{count}
+                          </span>
+                          <button type="button" className="ss-batch-step" aria-label={`增加${ELEMENT_NAME[element]}`}
+                            disabled={count >= max} onClick={() => setBatchPick({ ...batchPick, [element]: count + 1 })}>＋</button>
+                          <small>×{value}</small>
+                        </span>
+                      );
+                    })}
+                    <b className="ss-batch-total">
+                      共 {ELEMENTS.reduce((sum, element) => {
+                        const value = game.transmuteValues.find((item) => item.element === element)?.value ?? 0;
+                        return sum + (batchPick[element] ?? 0) * value;
+                      }, 0)} 水晶
+                    </b>
+                    <button type="button" className="ss-op-action ss-op-primary"
+                      disabled={!ELEMENTS.some((element) => (batchPick[element] ?? 0) > 0)}
+                      onClick={() => {
+                        const elements = ELEMENTS
+                          .filter((element) => (batchPick[element] ?? 0) > 0)
+                          .map((element) => ({ element, count: batchPick[element]! }));
+                        send({ type: 'transmute-batch', elements });
+                        setBatchPick(null);
+                      }}>确认晶化</button>
+                    <button type="button" className="ss-op-action" onClick={() => setBatchPick(null)}>取消</button>
+                  </div>
+                )}
                 {me?.canTransmute && (
                   <span className="ss-op-label">
                     元素晶化{me.transmuteBonus ? `（徽章每枚 +${me.transmuteBonus}）` : ''}
                   </span>
                 )}
                 {me?.canTransmute && <button type="button" className="ss-op-action" disabled={!canPlay}
-                  onClick={() => { setActionPayment([]); setActionStage({ kind: 'transmute' }); }}>晶化</button>}
+                  onClick={() => setBatchPick({})}>晶化</button>}
                 {me?.canTransmute && <span className="ss-transmute-rates">{game.transmuteValues.map(({ element, value }) =>
                   <span key={element}><img src={elementArt(element)} alt={ELEMENT_NAME[element]} />{value}</span>)}</span>}
                 {me?.canTransmute && <span className="ss-op-divider" />}
