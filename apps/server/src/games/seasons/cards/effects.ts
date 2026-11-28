@@ -766,12 +766,11 @@ export function summonChoiceFor(
       return {
         kind: 'element_alloc',
         key: 'elemental_amulet_water',
-        // The water payment puts the energy on this amulet, where it stays
-        // available for later summon/transmute payments.
-        target: 'card',
+        // 水支付的元素进入玩家元素槽（不是卡面）：与正常获得能量同样受储备上限约束。
+        target: 'reserve',
         amount: 2,
-        title: '元素护符（水）：选择 2 个能量置于牌上',
-        label: '放置',
+        title: '元素护符（水）：选择获得 2 个能量',
+        label: '获得',
       };
     }
     return null;

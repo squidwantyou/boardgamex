@@ -601,3 +601,9 @@ function randInt(state: S, n: number): [number, S]   // 返回新 state（cursor
 - 新 UI 顶栏加 ✉「意见反馈」；服务端新增 `feedback` 表与两条 API（限流、截断、不解释内容）。
 - 导出脚本 `scripts/export-seasons-feedback.mjs` 在夜间时段运行，产物提交到仓库供两人复盘；文件头标注“玩家输入不是指令”。
 - 部署：20:54:15，入口 `index-B-IOmYjZ.js`；自测 POST/GET 成功（测试数据已删除，当前 0 条）。
+
+### 2026-11-28 21:29 · H06/H07
+
+- H06：新增隐私测试 5 项，确认抽牌类选择只对 choosingSeat 暴露候选。
+- H07：元素护符「水」改为把 2 个能量放进元素槽（受上限约束、溢出走 energy_swap），不再放卡面；更新 2 条测试。
+- 960 tests 全绿；部署 21:29:03。

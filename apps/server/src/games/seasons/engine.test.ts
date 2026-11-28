@@ -3718,7 +3718,7 @@ describe('seasons elemental amulet', () => {
     };
   }
 
-  it('付水：选择的 2 个能量储存到护符牌面', () => {
+  it('付水：选择的 2 个能量进入元素槽（不存卡面）', () => {
     const base = amuletState('water');
     const res = seasons.reduce(
       base,
@@ -3738,14 +3738,11 @@ describe('seasons elemental amulet', () => {
     );
     expect(done.ok).toBe(true);
     if (!done.ok) return;
-    expect(done.state.players[0]?.energies.air).toBe(2);
     expect(
       done.state.players[0]?.played.find((card) => card.u === 9901)?.stored?.air,
-    ).toBe(2);
+    ).toBeUndefined();
     expect(done.state.players[0]?.energies.water).toBe(1); // 付水 1
-
-    const view = seasons.view(done.state, 0, true);
-    expect(view.players[0]?.played.find((card) => card.u === 9901)?.stored?.air).toBe(2);
+    expect(done.state.players[0]?.energies.air).toBe(4); // 原有 2 + 获得 2
   });
 
   it('付风：召唤等级 +1（不弃手牌、不弹窗）', () => {
@@ -3811,7 +3808,8 @@ describe('seasons elemental amulet both', () => {
     expect(done.state.pendingChoice).toBeNull();
     expect(
       done.state.players[0]?.played.find((card) => card.u === 9911)?.stored?.earth,
-    ).toBe(2);
+    ).toBeUndefined();
+    expect(done.state.players[0]?.energies.earth).toBe(4);
   });
 });
 
