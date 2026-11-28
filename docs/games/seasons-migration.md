@@ -10,11 +10,11 @@
 
 | 项 | 值 |
 |---|---|
-| 当前阶段 | Phase 5 卡牌框架（用户 11-23 拍板：T3.6b 不装 Playwright、T4.4b 由用户人肉测试；11-24 又裁定删除扩展卡 51–90、只保留基础 50 张，并修正 5 张卡效果） |
-| 当前任务 | T5.1 储备语义统一 ✅；T5.2 卡池校验/注册表 ✅（现只保留基础 50 张，`customDeck` 仍可指定）；T5.4 卡池压力测试 ✅（参数改为 `[局数] [人数] [随机池大小]`）；T5.5 卡效修正 ✅（4/7/12/36/42 按用户裁定、41 偷窃妖精补实现、扩展 51–90 删除；11-25 又按用户确认修正 44 死灵匕首与 39 提图斯）；T5.6 预设卡池 ✅（五福季节 5×20、骰子季节 100 张恶意之骰）。待做：T5.3 效果处理器注册表。剩余人工项：T4.4b 由用户手测、T3.6b 不装 Playwright、T4.7b 不再重复部署 |
+| 当前阶段 | Phase 6 交付整合完成（GPT `f47aa07` 已合入 main 并部署）：90 张卡（50 基础 + 20 + 20 扩展，按用户 Excel 修正 33 张费用）、新牌桌 UI、955 tests。用户 11-28 授权：合并/部署/决策不必等确认 |
+| 当前任务 | 按试玩反馈与 H01–H08（弃牌堆隐藏、批量晶化、整页适配、看牌带图、望远镜拖动、他人抽牌选项隔离、元素护符进元素槽、卡图裁切）继续；F8.3b 逐步回放待后端快照方案；旧 50 卡 oracle/L1 降级为历史脚本 |
 | 迷你版目标 | 3 个夜间时段（约 6 次运行）产出「2 人可完整打完一局」 |
 | 完整版目标 | 之后约 1 周：基础 50 卡全量 + ext1/ext2 + 打磨 |
-| 最后更新 | 2026-11-25 12:45 |
+| 最后更新 | 2026-11-28 20:15 |
 
 ## 1. 目标与边界
 
@@ -186,6 +186,12 @@ function randInt(state: S, n: number): [number, S]   // 返回新 state（cursor
 
 ## 9. 进度看板
 
+### Phase 6 交付整合（GPT `f47aa07`）
+- [x] T6.1 在本地分支 `integrate-f47aa07` 演练整合：955 tests、三包构建、smoke 改写、素材哈希校验
+- [x] T6.2 合入 main、部署（入口 `index-HnEXgQG4.js`）、推送两仓与子模块
+- [ ] T6.3 旧 oracle/L1 脚本按 90 卡重写或删除（当前标记为历史脚本）
+- [ ] T6.4 H01–H08 用户新需求（见 §0 当前任务）
+
 ### Phase 1
 - [x] T1.1 protocol 类型 + schema + catalog
 - [x] T1.2 引擎骨架 setup/view/元信息
@@ -279,6 +285,14 @@ function randInt(state: S, n: number): [number, S]   // 返回新 state（cursor
 6. 不要跨阶段抢跑；不要在没有更新文档的情况下结束运行。
 
 ## 12. 变更日志
+
+- **2026-11-28 20:00–20:15** 整合 GPT 交付 `f47aa07`（用户已验收）并上线。
+  - 交付内容：90 卡引擎（50 基础 + 20 + 20 扩展，按用户 Excel 修正 33 张费用/分数）、重写牌桌 UI（`ss-table`/`ss-inline-choice`/`TableCard`/`ReserveBank`/`table.css`）、宿主改动（auth/http/matches/protocol index/MatchPage/GameOptions/lib/api/socket/vite 源码直连）、201 张美术素材、`scripts/verify-seasons-assets.mjs` 等。
+  - 过程：GitHub 22 端口拉包卡死 → `bgx_seasons` 远端改 `ssh.github.com:443`；`git archive` 触发 gc 卡死 → 改为逐文件 `git show` 解包；smoke 旧断言（`ss-band-top`/`ss-spectator`/`ss-hints`/`ss-modal`）与新 UI 不符 → 改写为 `ss-table`/`ss-log-tools`/`ss-die-`/`ss-inline-choice`，能量重分配候选按 `current+incoming` 上限生成。
+  - 验证：9 文件 **955 tests** 全绿；protocol/server/web 构建通过（web 752.90 kB JS + 59.91 kB CSS）；smoke **1194 次渲染**（SSR 4.97ms / p95 14.47ms）；91 张卡图 sha256 与 `docs/seasons-assets.json` 全对；冬季 2 号骰 4/6 修正保留。
+  - 已知：旧 `oracle-seasons.mjs`/`oracle-seasons-l1.mjs` 按旧 50 卡基线写，已失效，由 `card-workbook.test.ts`（271 断言）取代；`sharp`/`playwright` 因机器内存不足不安装（用户 11-28 明确）。
+  - 部署：`bash scripts/deploy-local.sh` → 2026-11-28 20:03:14，入口 `index-HnEXgQG4.js`，healthz ok，线上 options 为 `pool` + `extensions`。
+  - 提交：`bgx` main `3ea17eb`（整合演练，已含全部代码）→ 本文档提交；`bgx_seasons` main `fb4414e`（插件镜像同步，含 90 卡引擎与新 UI 素材）；子模块指针前滚到 `fb4414e`。
 
 - **2026-11-20** 建立文档，确定技术选型（随机 B、2 人局可认输、紧凑 state、webp 资源、oracle 分层）。下一步 T1.1。
 - **2026-11-21 00:00–00:10** 完成 Phase 1 全部（T1.1–T1.5）+ T2.1 选骰。

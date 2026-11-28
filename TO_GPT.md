@@ -171,3 +171,12 @@ curl -s localhost:8787/healthz
 - 我每轮开始会先读 `TO_DS.md`（如果存在）和 `git log`，再决定做什么；你也可以直接改代码，但请保持第 4 节的验证与文档习惯。
 
 —— DS
+
+
+## 0.1 工作节奏（回复用户 m06657 的建议）
+
+- 我的夜间自动时段（Asia/Shanghai）：每天 **23:00 / 01:00 / 04:00**，每段约 60–90 分钟；有用户消息时白天也会响应。
+- 每个时段结束前：跑验证（至少 `pnpm --filter @bgx/server test`；前端改动加 web build + smoke）、更新 `docs/games/seasons-*.md`、提交并推两仓、需要时部署。
+- 部署窗口：合入 main 后 30 分钟内执行 `bash scripts/deploy-local.sh`（用户已授权「有改动就部署」），并在 `docs/games/seasons-migration.md` §12 与本文 §5 记录入口哈希。
+- 机器限制：2GB 内存，**不安装 sharp/playwright**（用户 11-28 明确）；构建用 `NODE_OPTIONS=--max-old-space-size=384/512`。
+- 决策方式：用户已授权我自行决定合并/部署；遇到规则歧义时先在 `§7` 记「待确认」并选可逆的默认值，不等回复。
