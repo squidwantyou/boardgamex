@@ -93,6 +93,18 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_match ON chat_messages(match_id, id);
+
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  game_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  message TEXT NOT NULL,
+  contact TEXT,
+  user_id TEXT,
+  match_id TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_game ON feedback(game_id, id);
 `);
 
 // —— 迁移：为旧库补上账号字段（全部可重复执行） ——
@@ -291,4 +303,54 @@ export function sessionUser(sessionId: string): UserRow | null {
 
 export function deleteExpiredSessions(): void {
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
+}
+
+export interface FeedbackRow {
+  id: number;
+  game_id: string;
+  category: string;
+  message: string;
+  contact: string | null;
+  user_id: string | null;
+  match_id: string | null;
+  created_at: number;
+}
+
+export function addFeedback(input: {
+  gameId: string;
+  category: string;
+  message: string;
+  contact?: string | null;
+  userId?: string | null;
+  matchId?: string | null;
+}): number {
+  const result = db
+    .prepare(
+      `INSERT INTO feedback (game_id, category, message, contact, user_id, match_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.gameId,
+      input.category,
+      input.message,
+      input.contact ?? null,
+      input.userId ?? null,
+      input.matchId ?? null,
+      Date.now(),
+    );
+  return Number(result.lastInsertRowid);
+}
+
+export function countFeedback(gameId?: string): number {
+  const row = gameId
+    ? (db.prepare('SELECT COUNT(*) AS n FROM feedback WHERE game_id = ?').get(gameId) as { n: number })
+    : (db.prepare('SELECT COUNT(*) AS n FROM feedback').get() as { n: number });
+  return Number(row?.n ?? 0);
+}
+
+export function listFeedback(limit = 500, gameId?: string): FeedbackRow[] {
+  const rows = gameId
+    ? db.prepare('SELECT * FROM feedback WHERE game_id = ? ORDER BY id DESC LIMIT ?').all(gameId, limit)
+    : db.prepare('SELECT * FROM feedback ORDER BY id DESC LIMIT ?').all(limit);
+  return rows as unknown as FeedbackRow[];
 }

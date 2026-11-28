@@ -13,6 +13,8 @@ import { listGames } from './games/registry.js';
 import * as matches from './matches.js';
 import { AppError } from './errors.js';
 import {
+  addFeedback,
+  countFeedback,
   deleteSession,
   findAccountByUsername,
   normalizeUsername,
@@ -31,6 +33,17 @@ const createMatchBody = z.object({
   visibility: z.enum(['public', 'private']).default('public'),
   options: z.record(z.union([z.string(), z.array(z.string())])).optional(),
 });
+
+const feedbackBody = z.object({
+  gameId: z.string().max(32).optional(),
+  category: z.enum(['bug', 'confusing', 'idea', 'other']).default('other'),
+  message: z.string().min(1).max(2000),
+  contact: z.string().max(120).optional(),
+  matchId: z.string().max(64).optional(),
+});
+
+/** 反馈限流：按 IP，每分钟最多 5 条 */
+const feedbackAttempts = new Map<string, { count: number; resetAt: number }>();
 
 const optionValueSchema = z.union([z.string(), z.array(z.string())]);
 const updateOptionsBody = z.object({
@@ -161,6 +174,39 @@ export async function registerHttp(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/games', async () => ({ games: listGames() }));
+
+  app.get('/api/feedback/count', async (request) => {
+    const { gameId } = request.query as { gameId?: string };
+    return { count: countFeedback(typeof gameId === 'string' && gameId ? gameId.slice(0, 32) : undefined) };
+  });
+
+  app.post('/api/feedback', async (request, reply) => {
+    const ip = request.ip ?? 'unknown';
+    const now = Date.now();
+    const entry = feedbackAttempts.get(ip);
+    if (!entry || entry.resetAt <= now) feedbackAttempts.set(ip, { count: 1, resetAt: now + 60_000 });
+    else if (entry.count >= 5) throw new AppError('feedback_rate_limited', '反馈太频繁，请稍后再试', 429);
+    else entry.count += 1;
+
+    const parsed = feedbackBody.safeParse(request.body);
+    if (!parsed.success) throw new AppError('invalid_feedback', '反馈内容不合法', 400);
+    const message = parsed.data.message
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+      .replace(/\r\n/g, '\n')
+      .trim();
+    if (!message) throw new AppError('invalid_feedback', '反馈内容不能为空', 400);
+    const user = userFromRequest(request, reply);
+    const id = addFeedback({
+      gameId: parsed.data.gameId ?? 'seasons',
+      category: parsed.data.category,
+      message: message.slice(0, 2000),
+      contact: parsed.data.contact?.trim().slice(0, 120) ?? null,
+      userId: user?.id ?? null,
+      matchId: parsed.data.matchId?.slice(0, 64) ?? null,
+    });
+    return { ok: true, id };
+  });
+
 
   app.get('/api/users/:id', async (request) => {
     const { id } = request.params as { id: string };

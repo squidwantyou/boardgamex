@@ -1412,3 +1412,47 @@ body.bgx-fullbleed .match-page {
     transition: none;
   }
 }
+
+/* 意见反馈（非游戏机制，用于收集真实对局反馈） */
+.ss-feedback-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(12, 18, 24, 0.62);
+  backdrop-filter: blur(2px);
+}
+.ss-feedback {
+  width: min(560px, 100%);
+  max-height: 88dvh;
+  overflow: auto;
+  padding: 18px;
+  border-radius: 14px;
+  background: var(--ss-surface, #1d262e);
+  color: var(--ss-text, #eef3f7);
+  border: 1px solid var(--ss-line, #34424d);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+  display: grid;
+  gap: 12px;
+}
+.ss-feedback-head h3 { margin: 0 0 4px; font-size: 18px; }
+.ss-feedback-head p { margin: 0; color: var(--ss-muted, #9fb0bd); font-size: 13px; line-height: 1.5; }
+.ss-feedback-cats { display: flex; flex-wrap: wrap; gap: 8px; }
+.ss-feedback-text,
+.ss-feedback-contact {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ss-line, #34424d);
+  background: rgba(0, 0, 0, 0.22);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+.ss-feedback-actions { display: flex; align-items: center; gap: 8px; }
+.ss-feedback-actions .ss-muted { margin-right: auto; font-size: 12px; }
+.ss-feedback-error { margin: 0; color: #f08a7a; font-size: 13px; }
+.ss-feedback-done { display: grid; gap: 10px; justify-items: start; }

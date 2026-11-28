@@ -107,6 +107,21 @@ export const api = {
     request<{ matchId: string }>(`/matches/${encodeURIComponent(id)}/rematch`, { method: 'POST' }),
   chat: (id: string) =>
     request<{ messages: ChatMessage[] }>(`/matches/${encodeURIComponent(id)}/chat`),
+  feedback: (payload: {
+    gameId?: string;
+    category: string;
+    message: string;
+    contact?: string;
+    matchId?: string;
+  }) =>
+    request<{ ok: boolean; id: number }>('/feedback', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  feedbackCount: (gameId?: string) =>
+    request<{ count: number }>(
+      `/feedback/count${gameId ? `?gameId=${encodeURIComponent(gameId)}` : ''}`,
+    ),
 };
 
 export type Me = { id: string; name: string; username: string | null };

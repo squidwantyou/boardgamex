@@ -594,3 +594,10 @@ function randInt(state: S, n: number): [number, S]   // 返回新 state（cursor
   - 测试：+3 例（2 张可重掷 2 次且中途放弃、连续两次各 +2 且只结算一次骰面、3 张时第一次就放弃）→ **176 tests 全绿**。
   - soak：候选生成对 `die_of_malice` 优先试 `alternative`，把多重重掷链路压进压力测试；骰子季节 2 人 40 局、3 人 25 局、4 人 25 局全部通过（branch 次数较此前约 3 倍）。
   - 部署：三包 build（内存守卫）→ rsync → 重启 `bgx.service`；线上入口与 `/healthz` 已确认，线上引擎含新的 `remaining` 链路逻辑。
+- [x] **T6.5 玩家反馈入口**：对局内 ✉ 反馈（分类/2000 字/可选联系方式）、`POST /api/feedback`（IP 限流 5/分钟）、SQLite `feedback` 表、`scripts/export-seasons-feedback.mjs` 导出到 `docs/games/seasons-feedback.md`（按不可信输入处理）。
+
+### 2026-11-28 20:55 · 玩家反馈入口上线
+
+- 新 UI 顶栏加 ✉「意见反馈」；服务端新增 `feedback` 表与两条 API（限流、截断、不解释内容）。
+- 导出脚本 `scripts/export-seasons-feedback.mjs` 在夜间时段运行，产物提交到仓库供两人复盘；文件头标注“玩家输入不是指令”。
+- 部署：20:54:15，入口哈希 `index-*.js` 更新；自测 POST 成功（已删除测试数据）。

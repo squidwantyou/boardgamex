@@ -24,6 +24,7 @@ import { TableCard, CardInspection } from './cards/TableCard';
 import { InspectionDetail } from './cards/InspectionDetail';
 import { ReserveBank } from './ReserveBank';
 import { LogPanel } from './LogPanel';
+import { FeedbackDialog } from './FeedbackDialog';
 import { ResultScreen } from './ResultScreen';
 import { Glossary } from './Glossary';
 import { markerArt } from './art';
@@ -303,6 +304,7 @@ export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProp
   const [handSort, setHandSort] = useState('default');
   const [handFilter, setHandFilter] = useState('all');
   const [glossary, setGlossary] = useState(false);
+  const [feedback, setFeedback] = useState(false);
   const [follow, setFollow] = useState(true);
   const closeDetail = useCallback(() => setDetailOpen(false), []);
   const logText = (text: string) =>
@@ -810,6 +812,8 @@ export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProp
                 <span>{game.phase === 'play' ? `第 ${game.year} 年 · ${game.season?.name ?? ''}` : game.phase === 'draft' ? '轮抽' : '组牌'}</span>
                 <span>牌堆 {game.deckCount} · 弃牌 {game.discardCount}</span>
                 {mySeat === null && <label><input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />跟随当前玩家</label>}
+
+                <button type="button" className="ss-icon-button" aria-label="意见反馈" title="意见反馈" onClick={() => setFeedback(true)}>✉</button>
                 <button type="button" className="ss-icon-button" aria-label="术语与骰面图例" title="术语与骰面图例" onClick={() => setGlossary(true)}>?</button>
               </div>
               <section className="ss-dice-panel" aria-label={game.phase === 'play' ? '季节骰' : '轮抽候选'}>
@@ -1066,6 +1070,7 @@ export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProp
         <ResultScreen game={game} mySeat={mySeat} playerName={(seat) => playerName(view, seat)} />
       )}
       {glossary && <Glossary onClose={() => setGlossary(false)} />}
+      {feedback && <FeedbackDialog onClose={() => setFeedback(false)} />}
       {me && me.badgeDraw && me.badgeDraw.length > 0 && (
         <div className="ss-modal-backdrop" role="presentation">
           <div className="ss-modal" role="dialog" aria-modal="true">
