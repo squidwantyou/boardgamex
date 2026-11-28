@@ -404,3 +404,8 @@
 
 - 新 UI 顶栏 ✉：分类 + 2000 字 + 可选联系方式；提交到 `/api/feedback`（IP 限流）。
 - 导出脚本 `scripts/export-seasons-feedback.mjs`，产物 `docs/games/seasons-feedback.md`；按不可信输入处理，夜间时段复盘。
+
+### 2026-11-28 23:04 · H01/H08（交付版 UI）
+
+- 弃牌数隐藏、骰池居中（H01）；卡图黑边裁切（H08，CSS 109.8%×106.3%）。
+- web build + smoke 通过；部署入口 `index-Ca6vCg_K.js`。

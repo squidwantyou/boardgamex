@@ -810,7 +810,7 @@ export function SeasonsPanel({ view, mySeat, disabled, onAction }: GamePanelProp
             <section className="ss-center">
               <div className="ss-table-status"><strong>四季物语</strong>
                 <span>{game.phase === 'play' ? `第 ${game.year} 年 · ${game.season?.name ?? ''}` : game.phase === 'draft' ? '轮抽' : '组牌'}</span>
-                <span>牌堆 {game.deckCount} · 弃牌 {game.discardCount}</span>
+                <span>牌堆 {game.deckCount}</span>
                 {mySeat === null && <label><input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />跟随当前玩家</label>}
 
                 <button type="button" className="ss-icon-button" aria-label="意见反馈" title="意见反馈" onClick={() => setFeedback(true)}>✉</button>

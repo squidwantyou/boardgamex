@@ -193,4 +193,7 @@ curl -s localhost:8787/healthz
 
 - **H06 他人抽牌选项隔离 ✅**：新增 `apps/server/src/games/seasons/privacy.test.ts`（5 项）——card_pick / card_list / energy_swap / energy_discard / vampiric_crown 只有 `choosingSeat` 能看到候选牌与私有明细；对手与观战者只看到「等待玩家完成选择」。视图里 `pendingCards` 只注入应答者。
 - **H07 元素护符 ✅**（引擎侧）：付水得到的 2 个能量改为进玩家元素槽（`target: 'reserve'`），不再存卡面；同样受储备上限约束，溢出走 `energy_swap`。卡面文案未改（仍写「得 2 能量」）。权贵之手（费用减免）只改支付费用，不影响护符的 `paid` 判定，已有测试覆盖。
-- 下一步建议：H01 弃牌堆隐藏、H08 卡图裁切；H02 批量晶化需要前端+引擎选择接口。
+- **H01 弃牌堆隐藏 ✅**：顶栏只显示牌堆数量，不再显示弃牌数；骰子区域在剩余空间内水平居中（`ss-center`/`ss-dice-panel`）。
+- **H08 卡图裁切 ✅**：原始卡图右侧 26px、底部 24px 为黑色留白；用 CSS 放大 109.8%×106.3% + 容器裁切去掉，卡面内容填满卡框（不改素材/费用/效果）。
+- 下一步：H02 批量晶化（需要前端+引擎选择接口）、H03 整页适配、H04 看牌带图、H05 望远镜拖动、H09 后续反馈。
+

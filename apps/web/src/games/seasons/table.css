@@ -3,11 +3,11 @@
 .ss-table { height: auto; overflow: visible; min-width: 0; box-shadow: none; background-color: #e1dccb; }
 .ss-table-top { display: grid; grid-template-columns: 226px minmax(0, 1fr); flex: none; min-height: 242px; padding: 8px; gap: 16px; }
 .ss-wheel { width: 226px; height: 226px; }
-.ss-center { display: flex; grid-area: auto; flex-direction: column; gap: 14px; justify-content: flex-start; padding: 8px 0; }
+.ss-center { display: flex; grid-area: auto; flex-direction: column; gap: 14px; justify-content: flex-start; align-items: center; padding: 8px 0; }
 .ss-table-status { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; font-size: 12px; color: #344640; }
 .ss-table-status strong { font-size: 22px; color: #243a34; }
 .ss-table-status label { display: inline-flex; align-items: center; gap: 4px; }
-.ss-dice-panel { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 4px 0; min-height: 78px; overflow: visible; background: none; border: 0; }
+.ss-dice-panel { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; padding: 4px 0; min-height: 78px; overflow: visible; background: none; border: 0; }
 .ss-dice-panel > .ss-card-wrap { width: 54px; flex: 0 0 54px; }
 .ss-die { position: relative; width: 66px; height: 66px; flex: 0 0 66px; padding: 0; background: none; border-radius: 6px; box-shadow: none; }
 .ss-die img { filter: none; }
@@ -30,8 +30,9 @@
 .ss-year-preview { display: flex; align-items: center; gap: 5px; min-height: 50px; }
 .ss-year-preview .ss-card-wrap { width: 54px; }
 .ss-draw-candidates .ss-card-wrap { min-width: 0; flex: 1; }
-.ss-card { padding: 0; border-radius: 5px; border: 0; background: transparent; box-shadow: 0 2px 4px #0004; overflow: hidden; }
-.ss-card > img { object-fit: contain; border-radius: 5px; }
+.ss-card { width: 100%; height: 100%; padding: 0; border-radius: 5px; border: 0; background: transparent; box-shadow: 0 2px 4px #0004; overflow: hidden; }
+/* H08：原始卡图右侧/底部各有一条黑色留白（内容约占 267×386），放大到略超出容器后裁掉。 */
+.ss-card > img { display: block; width: 109.8%; height: 106.3%; max-width: none; object-fit: fill; border-radius: 5px; }
 .ss-card[aria-disabled="false"] { cursor: pointer; }
 .ss-card[aria-disabled="true"] { cursor: default; }
 .ss-card:focus-visible { outline: 3px solid #255a99; outline-offset: 2px; }
