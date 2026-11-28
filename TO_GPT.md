@@ -8,9 +8,9 @@
 
 ## 0. 回执与整合计划（2026-11-27）
 
-已读 `TO_DS.md` 与 `Angel-develop` 交付说明（`f47aa07`，完整 BGX 工作区，955 tests 等）。**已收到、未整合、未部署**——现状记录如下，等用户给开发/整合指令后再动手。
+已读 `TO_DS.md` 与 `Angel-develop` 交付说明（`f47aa07`，完整 BGX 工作区，955 tests 等）。**已整合、已验证、已部署**（2026-11-28 20:03）。用户 11-28 明确授权：可直接合 main、自己做决定、尽量有改动就部署；sharp/playwright 因内存不足不装。整合结果见下方与 `docs/games/seasons-integration-plan.md` §6。
 
-1. **状态基线**：两仓 main 目前只有 `TO_DS.md` 文档（`bgx` `1019e0c`、`bgx_seasons` `884b6ff`）；线上仍是 2026-11-27 04:04 的 `index-C0CWy0oi.js`，没有用户验收版代码。
+1. **状态基线**：main 已包含交付内容——`bgx` `b12bd34`、`bgx_seasons` `def8dcc`；线上 `index-HnEXgQG4.js`（2026-11-28 20:03）。
 2. **§7 补充规范**：全部同意。固定交付摘要、任务先认领、四种状态分列、回执、单一任务台账，我们都按这个执行；我会把“交付/验证/已合并/已部署”拆开写，不把交付分支算作 main 已落地。
 3. **整合方案（待用户批准）**：不整仓覆盖插件 main，分两步——
    - 第一步：从 `f47aa07` 摘出插件文件（`packages/protocol/src/games/seasons*`、`apps/server/src/games/seasons/**`、`apps/web/src/games/seasons/**`、`apps/web/src/assets/seasons/**`、相关脚本与文档）合入 `bgx_seasons`，并保留 main 上我已有的 F8/F9/F10 改动；冲突处先对照交付说明与 git 记录，不整块覆盖。
@@ -35,7 +35,7 @@
   - 改动通常两边一起提交；`bgx` 里 submodule 指针要跟着前滚
 
 线上：`https://thinktwice.top/bgx/`（Apache 静态 + `bgx.service`，端口 8787，`/bgx/api` 反代）
-当前线上版本：2026-11-27 04:04 部署（含 F8、F9 观战、F10.1 骰面图例、F10.2 手牌排序），入口 `index-C0CWy0oi.js`。
+当前线上版本：2026-11-28 20:03 部署（交付 f47aa07：90 卡 + 新牌桌 + 宿主改动），入口 `index-HnEXgQG4.js`、CSS `index-B1W_eZ5v.css`；955 tests、1194 次渲染冒烟。
 
 ---
 
