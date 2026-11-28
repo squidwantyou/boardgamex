@@ -299,6 +299,7 @@ try {
     { kind: 'card_list', key: 'test_card_list', choosingSeat: 0, options: { title: '保留 1 张', keep: 1, label: '保留', cards: cardPool } },
     { kind: 'sacrifice_cards', key: 'test_sacrifice', choosingSeat: 0, options: { title: '选择要牺牲的卡', label: '牺牲', remaining: 1, chosen: [] } },
     { kind: 'multi_player_pick', key: 'test_multi', choosingSeat: 0, options: { title: '选择每位玩家的一张牌', label: '确定', players: [1] } },
+    { kind: 'branch', key: 'crystal_orb', choosingSeat: 0, options: { title: '看牌堆顶', label: '确定', card: { i: 12, u: 9001 }, branches: [{ id: 'keep', label: '放回牌堆顶', enabled: true }, { id: 'summon', label: '弃 4 能量免费召唤', enabled: true }] } },
     { kind: 'branch', key: 'test_branch', choosingSeat: 0, options: { title: '选择分支', label: '确定', branches: [{ id: 'normal', label: '正常结算', enabled: true }, { id: 'alternative', label: '重掷骰子', enabled: false }] } },
     { kind: 'month_advance', key: 'test_month', choosingSeat: 0, options: { title: '季节轮前进/后退', label: '确定' } },
     { kind: 'energy_discard', key: 'test_discard', choosingSeat: 0, options: { title: '储备上限变为 7，请弃掉 2 个能量', amount: 2, available: { water: 3, air: 1, fire: 0, earth: 0 }, label: '弃掉' } },
@@ -313,6 +314,7 @@ try {
       throw new Error(`ChoiceModal 渲染失败（${pending.kind}）：${error.message}`);
     }
     if (!html.includes('ss-inline-choice')) throw new Error(`ChoiceModal 输出缺少 ss-inline-choice（${pending.kind}）`);
+    if (pending.key === 'crystal_orb' && !html.includes('ss-choice-peek')) throw new Error('水晶球看牌缺少卡图预览');
     renders += 1;
     pendingSeen.add(pending.kind);
   }

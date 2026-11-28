@@ -59,6 +59,9 @@ export function ChoiceModal({ game, mySeat, onSend, paidSources = [], payTokens 
   const label = typeof options.label === 'string' ? options.label : '确认';
   const kind = pending.kind;
   const cards = Array.isArray(options.cards) ? (options.cards as SeasonsCardView[]) : [];
+  // H04：看牌类效果（水晶球/望远镜等）把被查看的牌以卡图形式展示给选择者。
+  const peeked = options.card && typeof (options.card as { i?: unknown }).i === 'number'
+    ? (options.card as unknown as SeasonsCardView) : null;
   const chooser = game.players.find((player) => player.seat === pending.choosingSeat);
   const amount = typeof options.amount === 'number' ? options.amount : kind === 'element_pick' ? 1 : 0;
   const keep = typeof options.keep === 'number' ? options.keep : 1;
@@ -257,6 +260,7 @@ export function ChoiceModal({ game, mySeat, onSend, paidSources = [], payTokens 
   return (
     <div className="ss-inline-choice" role="group" aria-label={title}>
         <h3>{title}</h3>
+        {peeked && <div className="ss-choice-peek"><TableCard card={peeked} /><small>{nameOf(peeked)}</small></div>}
         {step && <p className="ss-choice-step">{STEP_LABEL[step] ?? step}</p>}
         {body}
         {options.optional === true && <button type="button" className="ss-button" onClick={() => submit('skip')}>放弃</button>}

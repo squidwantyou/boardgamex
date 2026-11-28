@@ -196,6 +196,8 @@ curl -s localhost:8787/healthz
 - **H01 弃牌堆隐藏 ✅**：顶栏只显示牌堆数量，不再显示弃牌数；骰子区域在剩余空间内水平居中（`ss-center`/`ss-dice-panel`）。
 - **H08 卡图裁切 ✅**：原始卡图右侧 26px、底部 24px 为黑色留白；用 CSS 放大 109.8%×106.3% + 容器裁切去掉，卡面内容填满卡框（不改素材/费用/效果）。
 - **H02 批量晶化 ✅**：新增动作 `transmute-batch`（protocol zod：1–4 项、每项 count 1–9；引擎校验重复元素/可用能量，整体成功或整体失败，按当季 `TRANSMUTE_VALUE` + 场上 `transmute_bonus` + 徽章加成加总）；前端「晶化」打开元素加减条，实时显示总水晶，确认一次提交。962 tests。
-- 下一步：H03 整页适配、H04 看牌带图、H05 望远镜拖动、H09 后续反馈。
+- **H04 看牌带图 ✅**：`ChoiceModal` 对 `options.card`（水晶球等看牌效果）渲染卡图预览 + 卡名，选择者可见；非选择者视图仍被引擎裁成「等待玩家完成选择」（新增 privacy.test 覆盖 crystal_orb）。smoke 增加 `ss-choice-peek` 断言。
+- 下一步：H03 整页适配、H05 望远镜拖动、H09 后续反馈。
+
 
 

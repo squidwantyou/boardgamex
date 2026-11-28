@@ -619,3 +619,9 @@ function randInt(state: S, n: number): [number, S]   // 返回新 state（cursor
 - 新动作 `transmute-batch`：一次选择多元素/多枚，引擎整体校验后结算，失败不部分扣费；log 汇总为「晶化 2水、1风 → N 水晶」。
 - 前端「晶化」改为元素加减条（显示每元素倍率与总水晶），确认一次提交。
 - 962 tests 全绿；web build + smoke 1194 次通过。
+
+### 2026-11-29 04:08 · H04 看牌带图
+
+- 选择弹窗对 `options.card` 显示卡图 + 卡名；水晶球看牌堆顶不再只有两个按钮。
+- 隐私：只有 choosingSeat 收得到 `options.card`，其他人是「等待玩家完成选择」；新增 privacy 用例。
+- 963 tests；smoke 1195 次（含 peek 断言）。

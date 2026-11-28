@@ -138,4 +138,21 @@ describe('seasons 选择隐私（H06）', () => {
     expect(otherJson).not.toContain(`"u":${top.u}`);
     expect(otherJson).not.toContain('"card":');
   });
+
+  it('crystal_orb 看牌：只有应答者能看到牌堆顶的卡，其他人只看到等待', () => {
+    const state = base();
+    const card = state.deck[state.deck.length - 1]!;
+    const next = withPending(
+      state,
+      { kind: 'branch', key: 'crystal_orb', options: { title: '看牌堆顶', card, branches: [{ id: 'keep' }, { id: 'summon' }] } },
+      null,
+    );
+    const chooser = seasons.view(next, 0).pendingChoice;
+    expect((chooser?.options as { card?: unknown }).card).toMatchObject({ u: card.u, i: card.i });
+    const other = seasons.view(next, 1).pendingChoice;
+    expect((other?.options as { card?: unknown }).card).toBeUndefined();
+    expect(other?.options.title).toBe('等待玩家完成选择');
+    const spectator = seasons.view(next, null).pendingChoice;
+    expect((spectator?.options as { card?: unknown }).card).toBeUndefined();
+  });
 });
